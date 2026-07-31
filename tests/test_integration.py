@@ -125,6 +125,7 @@ def skill(tmp_db: str, api_config: dict[str, str]) -> MemorySkill:
     config = MemorySkillConfig(
         db_path=tmp_db,
         agent_name="test_agent",
+        namespace="test_agent",
     )
     sk = MemorySkill(config)
     return sk
@@ -274,6 +275,10 @@ class TestWeave:
 
     def test_weave_with_memories(self, skill: MemorySkill) -> None:
         """After ingest, weave returns non-empty context."""
+        # Ensure test data is present (this test may run independently of TestIngest)
+        if skill._dialogue_store.count() < 10:
+            for turn in _INGEST_TURNS:
+                skill.ingest(turn)
         ctx = skill.weave(
             user_message="你记得我学的是什么框架吗？",
             scene_summary="用户在问之前学过的技术栈",
@@ -282,7 +287,7 @@ class TestWeave:
         assert not ctx.is_empty, "Weave should return non-empty context after ingest"
         block = ctx.to_prompt_block()
         assert block, "to_prompt_block should not be empty"
-        assert len(block) > 50
+        assert len(block) > 50, f"Expected block > 50 chars, got {len(block)}"
         logger.info("Weave output (%d chars):\n%s", len(block), block[:300])
 
     def test_weave_tier1_scene(self, skill: MemorySkill) -> None:
