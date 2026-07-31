@@ -237,7 +237,7 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
     agent_name = stores.agent_name
     ds = stores.dialogue_store
 
-    for e in envelope.entries[:1]:  # just 1 unit
+    for e in envelope.entries:  # skip non-dialogue entries (e.g. persona card) to find a buildable unit
         turn_id = e.metadata.get("turn_id", "") if e.metadata else ""
         if not turn_id:
             continue
@@ -287,7 +287,7 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
                 # Infer speaker from turn ID prefix (namespace)
                 # e.g. "st_agent_a_123" → agent_a, "st_user_456" → user
                 ns_match = t.id.split("_")[1] if t.id.startswith("st_") and t.id.count("_") >= 2 else ""
-                label = ns_match if ns_match else agent_name
+                label = ns_match if ns_match else (agent_name or "助手")
             else:
                 label = t.role
             snippet = t.content[:50]
