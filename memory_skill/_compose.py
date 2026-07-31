@@ -63,24 +63,16 @@ class MemorySystem:
         extract_structured(self, turn)
         return result
 
-    def _tag_title(self, turn) -> None:
-        if not self.tree:
-            return
-        title = self._generate_title(turn.content)
-        if not title:
-            return
-        try:
-            self.learned_store.set_title(f"dialogue:{turn.id}", title)
-        except Exception:
-            pass
-
-
-
-
-
-
-    def retrieve(self, query: str, limit: int = 10, filters=None):
+    def retrieve(self, query: str, limit: int = 10, filters=None,
+                  partner: str | None = None):
+        if partner and not filters:
+            ns = self._ns_for(partner)
+            filters = {"category": ns}
         return self.retriever.retrieve(query, limit=limit, filters=filters)
+
+    def boost_weight(self, entry_id: str, delta: float = 0.05, cap: float = 0.95) -> float:
+        """Boost a memory entry's weight (delegates to learned_store)."""
+        return self.learned_store.boost_weight(entry_id, delta, cap)
 
     def ingest_screen(self, entry) -> object:
         return self.ingestor.ingest_screen(
@@ -245,7 +237,6 @@ class MemorySystem:
                     lines.append(f"  · {t.content[:100]}")
                 return "\n".join(lines)
         return f"[扩展记忆 — {title}]\n  · {match.content[:200]}"
-        return self.learned_store.boost_weight(entry_id, delta)
 
     def learn(self, topic: str, urls: list) -> object:
         from memory_skill.capability_registry import CapabilityRegistry
