@@ -193,6 +193,42 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["query_id"],
         },
     },
+    {
+        "name": "memory_learn",
+        "description": (
+            "Closed-loop knowledge acquisition: crawl URLs, synthesize markdown, "
+            "ingest into memory, and verify comprehension. Use when the agent "
+            "detects a knowledge gap and has source URLs to learn from. "
+            "Returns task status (crawling/synthesizing/verifying/done/failed)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "The knowledge topic to learn about.",
+                },
+                "urls": {
+                    "type": "array",
+                    "description": "List of source URLs to crawl for knowledge.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["topic", "urls"],
+        },
+    },
+    {
+        "name": "memory_gaps",
+        "description": (
+            "List knowledge gaps detected during conversation — topics the agent "
+            "could not answer confidently. Use to discover what the agent does not "
+            "know, then call memory_learn to fill gaps with source URLs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -249,6 +285,13 @@ class ToolHandler:
                     search_results=arguments.get("search_results"),
                     final_response=arguments.get("final_response"),
                 )
+            elif tool_name == "memory_learn":
+                return self._learn(
+                    topic=arguments.get("topic", ""),
+                    urls=arguments.get("urls", []),
+                )
+            elif tool_name == "memory_gaps":
+                return self._gaps()
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as exc:
@@ -420,4 +463,45 @@ class ToolHandler:
             "query_id": query_id,
             "outcome": outcome,
             "recorded": len(cited_ids)
+        }
+
+    # ── Learning loop tools ─────────────────────────────────────────────
+
+    def _learn(self, topic: str, urls: list[str]) -> dict[str, Any]:
+        """Closed-loop knowledge acquisition: crawl → synthesize → ingest → verify."""
+        if not topic.strip():
+            return {"error": "topic is required"}
+        if not urls:
+            return {"error": "at least one URL is required"}
+
+        try:
+            task = self._skill.learn(topic, urls)
+            return {
+                "task_id": task.id,
+                "topic": task.topic,
+                "status": task.status,
+                "attempts": task.attempts,
+                "status_log": [
+                    {"status": s, "detail": d}
+                    for s, d, _ in task.status_log
+                ],
+            }
+        except Exception as exc:
+            logger.exception("Learn task failed for %r", topic)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def _gaps(self) -> dict[str, Any]:
+        """Return currently detected knowledge gaps."""
+        gaps = self._skill.gaps
+        return {
+            "count": len(gaps),
+            "gaps": [
+                {
+                    "query": g.query[:120],
+                    "branch": g.branch,
+                    "severity": g.severity,
+                    "confidence": g.confidence,
+                }
+                for g in gaps[-20:]
+            ],
         }

@@ -278,7 +278,8 @@ class Ingestor:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def ingest_dialogue(self, turn: DialogueTurn, category: str | None = None) -> None:
+    def ingest_dialogue(self, turn: DialogueTurn, category: str | None = None,
+                         extra_metadata: dict | None = None) -> None:
         """Ingest a dialogue turn — all content goes to both stores.
 
         1. Store in SawRingBuffer (always)
@@ -310,6 +311,8 @@ class Ingestor:
         }
         if turn.partner:
             meta["partner"] = turn.partner
+        if extra_metadata:
+            meta.update(extra_metadata)
 
         if dup:
             # Merge: update content, bump weight, refresh timestamp

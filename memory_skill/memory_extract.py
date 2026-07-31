@@ -67,7 +67,8 @@ def tag_title(ms, turn) -> None:
 # ── Structured ingest helpers ─────────────────────────────────────────────
 
 
-def _ingest_structured(ms, title: str, content: str, category: str) -> object:
+def _ingest_structured(ms, title: str, content: str, category: str,
+                       source_urls: list[str] | None = None) -> object:
     from memory_skill.contracts import DialogueTurn
     now = dt.now(UTC)
     turn = DialogueTurn(
@@ -77,7 +78,10 @@ def _ingest_structured(ms, title: str, content: str, category: str) -> object:
         timestamp=now,
         saw_index=0,
     )
-    result = ms.ingestor.ingest_dialogue(turn, category=category)
+    extra = {}
+    if source_urls:
+        extra["source_urls"] = source_urls
+    result = ms.ingestor.ingest_dialogue(turn, category=category, extra_metadata=extra)
     if ms.tree and category not in ("pref", "pers"):
         try:
             from memory_skill.tree_classifier import classify_skill_path
@@ -89,8 +93,9 @@ def _ingest_structured(ms, title: str, content: str, category: str) -> object:
     return result
 
 
-def ingest_skill_ex(ms, title: str, content: str) -> object:
-    return _ingest_structured(ms, title, content, "skill")
+def ingest_skill_ex(ms, title: str, content: str,
+                    source_urls: list[str] | None = None) -> object:
+    return _ingest_structured(ms, title, content, "skill", source_urls=source_urls)
 
 
 def ingest_mission_ex(ms, title: str, content: str) -> object:

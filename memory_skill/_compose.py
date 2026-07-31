@@ -191,7 +191,7 @@ class MemorySystem:
 
     def ingest_skill(self, title: str, content: str, source_urls: list[str]) -> object:
         from memory_skill.memory_extract import ingest_skill_ex
-        return ingest_skill_ex(self, title, content)
+        return ingest_skill_ex(self, title, content, source_urls=source_urls)
 
     def ingest_pers(self, trait: str) -> object:
         from memory_skill.memory_extract import ingest_pers as _ip
