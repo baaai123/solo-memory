@@ -15,29 +15,45 @@ Agent 设置 `OPENAI_API_BASE=http://127.0.0.1:8888/v1` 即可。记忆自动注
 
 ### 2. MCP 协议 (OpenCode / Cursor)
 
-**OpenCode** — 添加 `~/.config/opencode/opencode.json`:
+**OpenCode** — 添加 `~/.config/opencode/opencode.json`（注意键是 `mcp`，不是 `mcpServers`；`command` 用数组形式；`memory_skill` 包需已安装到 venv，见下）:
 ```json
 {
-  "mcpServers": {
-    "memory": {
-      "command": "python",
-      "args": ["-m", "memory_skill.mcp_server"],
-      "env": {
-        "DEEPSEEK_API_KEY": "sk-xxx"
-      }
+  "mcp": {
+    "opencode-memory": {
+      "type": "local",
+      "command": ["/绝对路径/memory for solo/venv/bin/python", "-m", "memory_skill.mcp_server"],
+      "environment": {
+        "MEMORY_SKILL_DB_PATH": "/绝对路径/opencode_memory.db",
+        "MEMORY_SKILL_AGENT": "opencode",
+        "DEEPSEEK_API_KEY": "sk-xxx",
+        "DEEPSEEK_API_BASE": "https://api.deepseek.com/v1",
+        "DEEPSEEK_MODEL": "deepseek-v4-flash",
+        "IMPORTANCE_API_KEY": "sk-xxx",
+        "IMPORTANCE_API_BASE": "https://api.deepseek.com/v1",
+        "IMPORTANCE_MODEL": "deepseek-v4-flash"
+      },
+      "timeout": 60000
     }
   }
 }
 ```
 
-**Cursor** — 配置 `.cursor/mcp.json`:
+> ⚠ 常见坑: `python -m memory_skill.mcp_server` 依赖 `memory_skill` 包在 **venv site-packages** 中（`pip install -e .`），否则只有 cwd 恰好是项目目录时才能 import。另外 `IMPORTANCE_*` 变量（树分类 LLM）缺了会导致重要性评分静默失败——建议与 `DEEPSEEK_*` 配同样的值。
+
+**Cursor** — 配置 `.cursor/mcp.json`（Cursor 使用 `mcpServers` 键）:
 ```json
 {
   "mcpServers": {
     "memory": {
       "command": "venv/bin/python",
       "args": ["-m", "memory_skill.mcp_server"],
-      "env": { "DEEPSEEK_API_KEY": "sk-xxx" }
+      "env": {
+        "DEEPSEEK_API_KEY": "sk-xxx",
+        "DEEPSEEK_API_BASE": "https://api.deepseek.com/v1",
+        "DEEPSEEK_MODEL": "deepseek-v4-flash",
+        "MEMORY_SKILL_DB_PATH": "/绝对路径/opencode_memory.db",
+        "IMPORTANCE_API_KEY": "sk-xxx"
+      }
     }
   }
 }
@@ -71,5 +87,8 @@ print(skill.expand("FastAPI"))
 | `DEEPSEEK_API_KEY` | — | LLM API 密钥 |
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | API 地址 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 模型名 |
+| `IMPORTANCE_API_KEY` | — | 树分类/重要性 LLM 密钥（建议与 `DEEPSEEK_API_KEY` 相同） |
+| `IMPORTANCE_API_BASE` | `https://api.deepseek.com/v1` | 树分类 API 地址 |
+| `IMPORTANCE_MODEL` | `deepseek-v4-flash` | 树分类模型名 |
 | `MEMORY_SKILL_DB_PATH` | `memory.db` | 数据库路径 |
 | `MEMORY_SKILL_AGENT` | `memory-skill` | Agent 名称 |
