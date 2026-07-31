@@ -90,7 +90,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS dialogue_fts USING fts5(
 """
 
     def __init__(self, config: MemorySkillConfig, ttl_seconds: int = 1800) -> None:
-        self._conn = sqlite3.connect(config.db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(config.db_path, check_same_thread=False, timeout=10)
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._ttl_seconds = ttl_seconds
         self._conn.executescript(DialogueStore._CREATE_TABLES_SQL)
 
