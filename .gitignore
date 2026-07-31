@@ -1,0 +1,28 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+*.db_chroma/
+
+# Model files (large binaries)
+models/
+
+# Environment (contains secrets)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ChromaDB stray
+*_chroma/
+:memory:*

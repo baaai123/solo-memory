@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "memory-skill"
+version = "0.6.0"
+description = "Long-term memory for AI Agents — local-first, self-evolving, zero-API retrieval"
+authors = [
+    { name = "Memory Skill Contributors" }
+]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "chromadb>=0.5.0",
+    "numpy>=1.26.0",
+    "click>=8.0.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "tenacity>=8.0.0",
+    "openai>=1.0.0",
+    "requests>=2.32.0",
+]
+
+[project.optional-dependencies]
+# ONNX embedding (bge-large-en-v1.5, 1024-dim)
+onnx = [
+    "onnxruntime>=1.18.0",
+    "tokenizers>=0.19.0",
+]
+
+# MiniCPM-5 query rewriting + auto-feedback
+llm = [
+    "llama-cpp-python>=0.3.0",
+]
+
+# Full install: ONNX + LLM
+full = [
+    "memory-skill[onnx,llm]",
+]
+
+# Development tools
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+]
+
+# LoCoMo evaluation scripts (not needed for core library)
+eval = [
+    "memory-skill[onnx]",
+]
+
+[project.scripts]
+memory = "memory_skill.cli:main"
+
+[project.urls]
+Repository = "https://github.com/user/memory-skill"
+Issues = "https://github.com/user/memory-skill/issues"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v"
+markers = [
+    "slow: Tests that make real API calls (DeepSeek) and may take >10s",
+    "network: Tests that fetch real URLs (web crawler)",
+]
