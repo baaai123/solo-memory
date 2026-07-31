@@ -64,6 +64,8 @@ eval = [
 
 [project.scripts]
 memory = "memory_skill.cli:main"
+memory-proxy = "memory_skill.transparent_proxy:_serve"
+memory-mcp = "memory_skill.mcp_server:serve"
 
 [project.urls]
 Repository = "https://github.com/user/memory-skill"
