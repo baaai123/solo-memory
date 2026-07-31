@@ -47,7 +47,7 @@ def generate_title(ms, content: str) -> str:
     model = ms.tree._model if hasattr(ms.tree, "_model") else ""
     raw = call_llm(api, key, model,
                    f"Summarize in 5 words: {content[:200]}",
-                   max_tokens=20, temperature=0.0)
+                   max_tokens=100, temperature=0.0)
     return raw.strip()[:50] if raw else content[:40]
 
 

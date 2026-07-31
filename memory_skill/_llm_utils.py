@@ -21,7 +21,7 @@ def call_llm(
     api_key: str,
     model: str,
     prompt: str,
-    max_tokens: int = 256,
+    max_tokens: int = 512,
     temperature: float = 0.0,
     timeout: float = 30.0,
     retries: int = 1,
