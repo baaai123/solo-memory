@@ -149,7 +149,7 @@ def weave(
     to deep depth.
     """
     now = datetime.now()
-    ctx = WeaveContext(time_context=f"[现在时间] {now.strftime('%Y-%m-%d %H:%M')}")
+    ctx = WeaveContext(time_context=f"[现在时间] {now.strftime('%Y-%m-%d %H:%M:%S')}")
     ns = _resolve_namespace(stores, partner)
     turn_count = _count_recent_turns(stores)
 
@@ -203,7 +203,7 @@ def _build_tier1(stores: WeaverStores, scene_summary: str) -> str:
     turns = stores.dialogue_store.get_recent(_MAX_RECENT_TURNS)
     if turns:
         agent_label = stores.agent_name or "助手"
-        lines = [f"[{t.timestamp.strftime('%H:%M')}] {'用户' if t.role == 'user' else agent_label}: {t.content[:80]}"
+        lines = [f"[{t.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {'用户' if t.role == 'user' else agent_label}: {t.content[:80]}"
                  for t in turns[-_MAX_RECENT_TURNS:]]
         parts.append("[最近对话]\n" + "\n".join(lines))
     result = "\n".join(parts)
@@ -299,7 +299,7 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
             continue
         seen_units.add(unit_key)
 
-        ts = e.created_at.strftime("%m-%d %H:%M") if e.created_at else "??-?? ??:??"
+        ts = e.created_at.strftime("%Y-%m-%d %H:%M:%S") if e.created_at else "????-??-?? ??:??:??"
         units.append(f"[{ts}] [记忆片段]\n{unit_text}")
 
     if units:
@@ -392,7 +392,7 @@ def _build_nudge(stores: WeaverStores) -> str:
     lines: list[str] = []
     for e in high[:_NUDGE_MAX_ITEMS]:
         snippet = e.content[:_NUDGE_MAX_CHARS]
-        ts = e.created_at.strftime("%m-%d %H:%M") if e.created_at else "??-?? ??:??"
+        ts = e.created_at.strftime("%Y-%m-%d %H:%M:%S") if e.created_at else "????-??-?? ??:??:??"
         if e.weight >= _NUDGE_CRITICAL_THRESHOLD:
             lines.append(f"[{ts}] ⚠ {snippet}——务必主动提及，这件事很重要")
         else:

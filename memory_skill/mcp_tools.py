@@ -53,7 +53,7 @@ TOOLS: list[dict[str, Any]] = [
             "Search agent memory for relevant past conversations and learned "
             "knowledge. Returns ranked results with content, relevance scores, "
             "and memory IDs. Use this BEFORE responding to any question about "
-            "past events, user preferences, or previously discussed topics.",
+            "past events, user preferences, or previously discussed topics."
         ),
         "inputSchema": {
             "type": "object",

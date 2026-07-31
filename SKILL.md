@@ -1,3 +1,8 @@
+---
+name: memory-skill
+description: Long-term memory for coding sessions — remember project facts, user preferences, past decisions, learned skills, and ongoing tasks across sessions. Call memory_weave before responding, memory_ingest after significant interactions, memory_search for deep retrieval. Use whenever context from past conversations could improve the current answer.
+---
+
 # Memory Skill for OpenCode
 
 Long-term memory for coding sessions. Remembers project facts, user preferences,
