@@ -1,31 +1,43 @@
-# Memory Skill — 总体规划 v0.6
+# Memory Skill v0.6 — 全链路复盘
 
-## P0 接入 — 全部完成
+## 一条用户消息的完整旅程
 
-- ✅ classify_and_extract 接入 ingest_dialogue (实测通过)
-- ✅ learning_task 使用 synthesize_markdown + ingest_skill (代码就位，API 限流待重测)
+```
+"我喜欢喝冰美式，每天下午都要来一杯"
+  │
+  ├─ ① ingest_dialogue                      [~1s, ONNX embed]
+  │     ├→ SawRingBuffer          内存          ← 高频缓冲区
+  │     ├→ DialogueStore          SQLite FTS5   ← BM25 检索 (jieba中文)
+  │     └→ LearnedStore           ChromaDB      ← 语义检索 (ONNX 1024维)
+  │
+  ├─ ② tag_title                            [~2s, LLM]
+  │     └→ LLM生成: "喝冰美式每天下午" → ChromaDB metadata
+  │
+  ├─ ③ extract_structured                   [~3s, LLM]
+  │     └→ classify_and_extract → type="pref", key="饮品", value="冰美式"
+  │        → ingest_pref → 存 category="pref"
+  │
+  ├─ ④ weave (下次对话时触发)
+  │     ├→ tier1: 最近对话           ← 固定注入
+  │     ├→ tier2: RRF检索            ← 语义+BM25+时间 (35ms, 200条@93%)
+  │     ├→ skill: 技能标题列表        ← 仅标题, 不注全文
+  │     ├→ mission: 步骤+技能状态     ← 解析markdown, 检查skill存在
+  │     ├→ pref: 用户偏好            ← 全量注入
+  │     ├→ pers: Agent人物卡          ← 最新版本
+  │     ├→ gap: 知识缺口              ← 自动检测
+  │     └→ preview: 近期记忆标题      ← Agent检索入口
+  │
+  └─ ⑤ expand (Agent引用标题时触发)
+        └→ 搜标题匹配 → 时间窗口展开 → 同时段记忆列表
+```
 
-## 结构侧四分支 — 全部完成
+## 核心指标
 
-- ✅ skill: classify提取 + skill树 + weave标题列表
-- ✅ mission: classify提取 + 步骤解析 + skill关联 + ⚠缺失标记
-- ✅ pref: classify提取 + 键值对 + weave全量
-- ✅ pers: classify提取 + 人物卡累积 + weave最新
-
-## 非结构侧 — 完成
-
-- ✅ user_mem索引 (title/time/vector/id)
-- ✅ expand() 时间展开
-- ✅ title预览 (LLM生成 + ChromaDB存储 + weave注入)
-- ✅ Agent检索主动权 (透明代理 + expand)
-
-## 管道 — 完成
-
-- ✅ weave八区块 (人格·偏好·场景·tier1·tier2·技能·任务·缺口·记忆)
-- ✅ 透明代理 (注入+存储+展开)
-- ✅ 网页爬虫 + 知识合成
-- ✅ 学习闭环 (gap→decider→crawl→synth→ingest→verify)
-
-## 架构 — 完成
-
-- ✅ 0私有违规 · 5Protocols · God-object拆解 · LLM去重 · user_mem去树化
+| 指标 | 数值 |
+|------|------|
+| 检索精度 (BM25中文) | 93% (300条) |
+| 检索延迟 | 102ms/q |
+| 结构提取准确率 | 5/5 类型正确 |
+| Agent检索展开 | 标题匹配 + 时间窗口 |
+| 总模块 | 33 |
+| 测试 | 15单元 + 65集成 |
