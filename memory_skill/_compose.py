@@ -201,6 +201,14 @@ class MemorySystem:
         from memory_skill.memory_extract import ingest_skill_ex
         return ingest_skill_ex(self, title, content)
 
+    def ingest_pers(self, trait: str) -> object:
+        from memory_skill.memory_extract import ingest_pers as _ip
+        return _ip(self, trait)
+
+    def ingest_pref(self, key: str, value: str) -> object:
+        from memory_skill.memory_extract import ingest_pref as _ipr
+        return _ipr(self, key, value)
+
     def count_turns(self) -> int:
         return self.dialogue_store.count()
 
