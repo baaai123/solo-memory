@@ -1,84 +1,69 @@
 # Memory Skill for OpenCode
 
-Long-term memory for coding sessions. Remembers project facts, user preferences, past decisions, and learned patterns — across sessions.
+Long-term memory for coding sessions. Remembers project facts, user preferences,
+past decisions, learned skills, and ongoing tasks — across sessions.
 
 ## What Memory Remembers
 
-- **Project facts**: "this project uses SQLite, not PostgreSQL", "the auth module is in src/auth/"
-- **User preferences**: "prefers TypeScript over JavaScript", "uses 2-space indentation"
-- **Past decisions**: "switched from ChromaDB to LanceDB for performance", "rejected gRPC in favor of REST"
-- **Bugs & fixes**: "the ONNX position encoding bug was fixed by truncating to 512"
-- **Patterns**: "user always writes tests before implementation"
+- **Project facts** (user_mem): "this project uses SQLite", "the auth module is in src/auth/"
+- **User preferences** (pref): "prefers TypeScript", "uses 2-space indentation"
+- **Past decisions** (user_mem): "switched from ChromaDB to LanceDB", "rejected gRPC"
+- **Bugs & fixes** (user_mem): "the ONNX position encoding bug, fixed by truncating"
+- **Skills** (skill): "can deploy FastAPI with uvicorn", "knows Docker compose"
+- **Ongoing tasks** (mission): "migrate auth module by Friday [doing]"
+- **Your personality** (pers): accumulates traits — "concise", "code-first"
 
 ## Usage Protocol
 
 ```
-FIRST TURN of session:
-  memory_status → check system health
+BEFORE responding:
+  opencode-memory_memory_weave(user_message)  → inject 8-block context
 
-BEFORE EVERY response to user:
-  memory_weave(user_message) → get auto-injected context
+AFTER important decisions, bugs, findings:
+  opencode-memory_memory_ingest(role, content) → persist for future
 
-AFTER significant exchanges:
-  memory_ingest(role, content) → save for future recall
+WHEN you need more than weave provides:
+  opencode-memory_memory_search(query)         → deep retrieval
 
-WHEN weave isn't enough:
-  memory_search(query) → explicit deep search
-
-AFTER seeing retrieval results:
-  memory_feedback(memory_ids, outcome) → train the system
+SESSION START:
+  opencode-memory_memory_status                 → health check
 ```
 
-## Tool Reference
+## Weave Context (what you receive)
 
-| Tool | When | Input | Output |
-|------|------|-------|--------|
-| `opencode-memory_memory_status` | Session start | none | Entry counts, model status, evolution ticks |
-| `opencode-memory_memory_weave` | Before every response | `user_message`, optional `scene_summary` | 3-tier context block (recent + recall + nudges) |
-| `opencode-memory_memory_search` | Deep dive needed | `query`, optional `limit` | Ranked memory entries with relevance scores |
-| `opencode-memory_memory_ingest` | After important turns | `role` (user/assistant), `content` | Confirmation |
-| `opencode-memory_memory_feedback` | After retrieval used | `memory_ids` (list), `outcome` (positive/negative/neutral) | Evolution tick result |
+```
+[人格设定]         # Agent 人物卡 (pers)
+[用户偏好]         # key-value preferences (pref)
+[当前场景]         # scene_summary
+[最近对话]         # last 3 turns
+[检索记忆]         # RRF-semantic recall from past
+[已掌握的技能]     # skill titles only
+[当前任务]         # mission steps with skill status
+[知识缺口]         # things to learn
+```
 
 ## When to Ingest vs Skip
 
-**Ingest** when:
+**Ingest:**
 - User states a fact about the project or themselves
-- A design decision is made
+- A design decision is made ("let's use Redis")
 - A bug is found and fixed
 - User expresses a strong preference
+- You learned a new skill or technique
 
-**Skip** when:
+**Skip:**
 - Greetings, small talk
 - Pure command execution without new knowledge
-- Error messages you're about to fix (ingest the fix, not the error)
-
-## Feedback
-
-After any turn where `memory_weave` or `memory_search` was used:
-- `positive` — retrieved memories were accurate and helpful
-- `negative` — retrieved memories were wrong or misleading
-- `neutral` — memories were present but irrelevant
-
-This trains the evolution system: accurate memories gain weight, wrong ones are suppressed.
+- Error messages (ingest the fix, not the error)
 
 ## Architecture (transparent to Agent)
 
 ```
-memory_weave → Embedder(ONNX bge-large) → Retriever(RRF fusion) → Weaver(3-tier context)
-memory_ingest → ImportanceGate → SQLite(BM25) + ChromaDB(vectors)
-memory_feedback → EvolutionLoop → weight ±0.15 per feedback
+memory_weave → Embedder(bge-large) → Retriever(RRF: BM25×2.5 + semantic×0.5 + time×0.5) → Weaver(8-block)
+memory_ingest → 两边存储:
+  ├── user_mem: raw dialogue → BM25 + vector index → RRF retrieval
+  └── structured: classify_and_extract(LLM) → pref/pers/skill/mission routing
 ```
 
-- **RRF fusion**: BM25 keyword ×2.5 + semantic vector ×0.5 + time decay ×0.5
-- **Evolution**: Feedback-driven weight adjustment. Verified facts rank higher over time.
-- **Consolidation**: Every 10 turns, TextRank extracts keywords → structured observations.
-- **Contradiction detection**: Opposite claims → both sides down-weighted.
-
-## States
-
-| State | Meaning |
-|-------|---------|
-| `mode=onnx` | Embedding model loaded (CPU, ~30s cold start) |
-| `learned=N` | Entries in ChromaDB vector store |
-| `dialogue=N` | Raw turns in SQLite |
-| `evo=N` | Evolution ticks this session |
+You also have **active retrieval**: reference a topic in your response, and
+the system expands it with related memories from the same time window.
