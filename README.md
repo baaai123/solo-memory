@@ -137,13 +137,13 @@ MEMORY_MODEL_PATH=models/bge-large-en-v1.5
 1. git clone https://github.com/baaai123/solo-memory
 2. 运行 ./setup.sh（创建 venv + 安装依赖 + 配置嵌入模型）
 3. 在 opencode.json 注册插件 opencode-auto-memory
-4. 需要我提供 IMPORTANCE_API_KEY 时告诉我
+4. 在 .env 里填我自己的 IMPORTANCE_API_KEY（用我自己的 LLM API key）
 
 注：./setup.sh 一键完成环境搭建；opencode-auto-memory 插件会自动注入记忆
 上下文并自动存储对话，Agent 无需手动调用记忆工具。
 ```
 
-AI 会自主完成 clone → 环境搭建 → 插件注册。你只需在它要求时提供 `IMPORTANCE_API_KEY`（唯一的必填凭据）。
+AI 会自主完成 clone → 环境搭建 → 插件注册。你只需在 `.env` 里填**你自己的 LLM API key**（用于记忆分类/合成/学习，走你自己的 API 账号计费）。
 
 > **为什么可行**：`setup.sh` 已封装环境搭建；`opencode-auto-memory` 插件含首次运行自动引导（venv 缺失时自动创建）。唯一人肉步骤是提供 API key——任何记忆系统都无法替你保管私钥。
 

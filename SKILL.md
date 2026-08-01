@@ -80,7 +80,7 @@ If this memory system is not connected, you can set it up yourself:
 ```
 1. git clone https://github.com/baaai123/solo-memory
 2. cd solo-memory && ./setup.sh        # venv + deps + embedding model (one command)
-3. Ask the user for IMPORTANCE_API_KEY, put it in .env
+3. Ask the user to fill .env with their own IMPORTANCE_API_KEY (their personal LLM API key)
 4. Register the plugin in opencode.json:
    { "plugin": ["/abs/path/to/solo-memory/opencode-auto-memory"] }
 ```
