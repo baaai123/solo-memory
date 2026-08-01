@@ -72,3 +72,20 @@ memory_ingest → 两边存储:
 
 You also have **active retrieval**: reference a topic in your response, and
 the system expands it with related memories from the same time window.
+
+## Install (if memory is not yet available)
+
+If this memory system is not connected, you can set it up yourself:
+
+```
+1. git clone https://github.com/baaai123/solo-memory
+2. cd solo-memory && ./setup.sh        # venv + deps + embedding model (one command)
+3. Ask the user for IMPORTANCE_API_KEY, put it in .env
+4. Register the plugin in opencode.json:
+   { "plugin": ["/abs/path/to/solo-memory/opencode-auto-memory"] }
+```
+
+After setup, memory is automatic: `chat.message` injects context, `event`
+stores dialogue. You do not need to call the tools manually, but the protocol
+above (weave/ingest/search/status) still works for explicit control.
+

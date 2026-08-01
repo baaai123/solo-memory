@@ -18,6 +18,30 @@ languages are stored and retrievable in the same database.
 
 ## Install
 
+### Option A: let your AI agent install it (fastest)
+
+Give your AI agent this instruction:
+
+```
+Install https://github.com/baaai123/solo-memory and hook it into my OpenCode.
+
+Steps:
+1. git clone https://github.com/baaai123/solo-memory
+2. Run ./setup.sh (creates venv + installs deps + configures embedding model)
+3. Register the opencode-auto-memory plugin in opencode.json
+4. Ask me for IMPORTANCE_API_KEY when needed
+
+Note: ./setup.sh handles the environment in one command; the
+opencode-auto-memory plugin auto-injects memory context and auto-stores
+dialogue — the agent never calls memory tools manually.
+```
+
+The AI clones, sets up, and registers the plugin on its own. The only manual
+step is providing `IMPORTANCE_API_KEY` (your private credential — no memory
+system can hold it for you).
+
+### Option B: manual install
+
 ```bash
 # 1. Clone solo-memory (contains the memory core + this plugin)
 git clone https://github.com/baaai123/solo-memory
