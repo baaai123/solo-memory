@@ -65,30 +65,6 @@ _BASE_BRANCHES: list[dict[str, Any]] = [
 # Branch ID → root lookup
 _BRANCH_TO_ROOT: dict[str, str] = {b["id"]: b["root"] for b in _BASE_BRANCHES}
 
-# ── LLM classification prompt ──────────────────────────────────────────────────
-
-_NAVIGATE_PROMPT = """\
-Available branches:
-  user_pref (偏好): habits, likes, dislikes, routines
-  user_mem (回忆与目标): life events, meals, mood, casual updates
-  assistant_task (任务): specific projects, bugs, deadlines, todos
-  assistant_skill (技能): tools mastered, APIs, frameworks, techniques
-  assistant_pers (人格): personality traits (rarely used)
-
-User: "{query}"
-
-Pick branch(es) + days to search. JSON only:
-{{"searches": [{{"branch": "user_mem", "days": 3}}]}}
-
-Rules:
-- "习惯"/"讨厌"/"喜欢"/"总是" → check user_pref
-- "吃了"/"做了"/"发生"/"心情"/"跟谁" → check user_mem
-- project/code/bug/feature names → check assistant_task
-- API/framework/tool/how to/learn → check assistant_skill
-- "昨天" → days=1, "最近" → days=3, "以前" → days=7
-- Can return 1-3 searches across different branches
-"""
-
 # Branch ID → Chinese label for display
 _BRANCH_LABEL_MAP: dict[str, str] = {
     "user_pref": "偏好",
@@ -152,7 +128,8 @@ class TreeManager:
         LLM model name (e.g. ``deepseek-v4-flash``).
     """
 
-    def __init__(self, db_path: str, api_base: str, api_key: str, model: str) -> None:
+    def __init__(self, db_path: str, api_base: str, api_key: str, model: str,
+                 classifier=None) -> None:
         self._db_path = db_path
         self._api_base = api_base
         self._api_key = api_key
@@ -163,8 +140,10 @@ class TreeManager:
         self._conn.executescript(_CREATE_TREE_SQL)
         self._conn.commit()
 
-        from memory_skill.tree_classifier import TreeClassifier
-        self._classifier = TreeClassifier(api_base, api_key, model)
+        if classifier is None:
+            from memory_skill.tree_classifier import TreeClassifier
+            classifier = TreeClassifier(api_base, api_key, model)
+        self._classifier = classifier
 
         # Ensure root nodes and base branches exist
         self._ensure_roots()
@@ -613,30 +592,12 @@ class TreeManager:
         return self._resolve_searches(searches)
 
     def _llm_navigate(self, query: str) -> list[dict] | None:
-        """Ask LLM to select branches + time ranges for the query.
+        """Ask the classifier (LLM) to select branches + time ranges.
 
         Returns a list of ``{"branch": str, "days": int}`` dicts,
         or ``None`` on any failure.
         """
-        prompt = _NAVIGATE_PROMPT.format(query=query[:500])
-        try:
-            result = self._call_llm(prompt, max_tokens=512)
-            if result and "searches" in result:
-                searches = result["searches"]
-                if isinstance(searches, list) and len(searches) > 0:
-                    valid: list[dict] = []
-                    for s in searches:
-                        if isinstance(s, dict) and "branch" in s:
-                            valid.append({
-                                "branch": s["branch"],
-                                "days": int(s.get("days", 3)),
-                            })
-                    if valid:
-                        _logger.debug("Navigate LLM selected: %s", valid)
-                        return valid
-        except Exception as exc:
-            _logger.warning("Navigate LLM failed: %s, using fallback", exc)
-        return None
+        return self._classifier.navigate(query)
 
     def _fallback_navigate(self) -> list[dict]:
         """Return all 5 branches × last 1 day when LLM is unavailable."""

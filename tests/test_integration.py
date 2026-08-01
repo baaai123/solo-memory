@@ -211,10 +211,17 @@ class TestIngest:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+_NEEDS_LLM = pytest.mark.skipif(
+    not os.getenv("DEEPSEEK_API_KEY"),
+    reason="requires DEEPSEEK_API_KEY (LLM classify test)",
+)
+
+
 @pytest.mark.slow
 class TestTreeMemory:
     """LLM-powered tree memory classification and navigation."""
 
+    @_NEEDS_LLM
     def test_tree_classify_python(self, tree: TreeManager) -> None:
         """'Python Web 后端' → classified as assistant_task."""
         result = tree.classify("我最近在学 Python，想写一个 Web 后端，有什么推荐？")
@@ -224,6 +231,7 @@ class TestTreeMemory:
         assert result["root"] in ("user", "assistant")
         logger.info("Python classify → %s/%s", result["root"], result["branch"])
 
+    @_NEEDS_LLM
     def test_tree_classify_preference(self, tree: TreeManager) -> None:
         """'喜欢冰美式' → classified as user_pref."""
         result = tree.classify("我喜欢喝冰美式，每天下午都要来一杯。")
@@ -231,6 +239,7 @@ class TestTreeMemory:
         assert result["branch"] in ("pref",), f"Expected pref, got {result['branch']}"
         logger.info("Preference classify → %s/%s", result["root"], result["branch"])
 
+    @_NEEDS_LLM
     def test_tree_classify_project(self, tree: TreeManager) -> None:
         """'RAG LangChain project' → classified as assistant_task."""
         result = tree.classify("我在用 LangChain 做 RAG 项目，数据存在 ChromaDB 里")

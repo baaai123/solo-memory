@@ -254,6 +254,34 @@ class FakeSawBuffer:
         return None
 
 
+class FakeTreeClassifier:
+    """Deterministic classify/navigate — no LLM, no network.
+
+    Keyword-based routing mirrors the real classifier's intent so
+    tree tests run offline and fast.
+    """
+
+    _BRANCH_KEYWORDS = {
+        "pref": ("喜欢", "讨厌", "习惯", "偏好"),
+        "pers": ("人格", "性格", "风格", "语气"),
+        "task": ("项目", "bug", "todo", "进展", "任务"),
+        "skill": ("学", "API", "框架", "怎么用", "技能", "FastAPI"),
+    }
+
+    def classify(self, content: str) -> dict:
+        text = content or ""
+        for branch, kws in self._BRANCH_KEYWORDS.items():
+            if any(kw in text for kw in kws):
+                root = "assistant" if branch in ("pers", "task", "skill") else "user"
+                return {"root": root, "branch": branch}
+        return {"root": "user", "branch": "mem"}
+
+    def navigate(self, query: str, max_tokens: int = 512) -> list[dict] | None:
+        if not query:
+            return None
+        return [{"branch": "user_mem", "days": 3}]
+
+
 def build_fast_system(config=None):
     """Compose a MemorySystem entirely from in-memory fakes.
 

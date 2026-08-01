@@ -23,6 +23,26 @@ Classify into one branch. Return JSON only:
 - assistant/skill: reusable knowledge, tools mastered, techniques learned, APIs, frameworks
 """
 
+_NAVIGATE_PROMPT = """\
+Available branches:
+  user_pref (偏好): habits, likes, dislikes, routines
+  user_mem (回忆与目标): life events, meals, mood, casual updates
+  assistant_task (任务): specific projects, bugs, deadlines, todos
+  assistant_skill (技能): tools mastered, APIs, frameworks, techniques
+  assistant_pers (人格): personality traits (rarely used)
+
+User: "{query}"
+
+Pick branch(es) + days to search. JSON only:
+{{"searches": [{{"branch": "user_mem", "days": 3}}]}}
+
+Rules:
+- "习惯"/"讨厌"/"喜欢"/"总是" → check user_pref
+- "项目"/"bug"/"todo"/"进展" → check assistant_task
+- "学"/"API"/"框架"/"怎么用" → check assistant_skill
+- Default → user_mem last 3 days
+"""
+
 
 class TreeClassifier:
     """LLM-based content classifier that determines which tree branch a
@@ -57,11 +77,42 @@ class TreeClassifier:
             _logger.warning("Tree classify API failed: %s, using fallback", exc)
         return _fallback_classify()
 
+    def navigate(self, query: str, max_tokens: int = 512) -> list[dict] | None:
+        """Ask LLM to select branches + time ranges for *query*.
 
-def _call_llm(api_base: str, api_key: str, model: str, prompt: str) -> dict | None:
+        Returns a list of ``{"branch": str, "days": int}`` dicts,
+        or ``None`` on any failure (caller falls back to keyword search).
+        """
+        prompt = _NAVIGATE_PROMPT.format(query=query[:500])
+        try:
+            result = _call_llm(
+                self._api_base, self._api_key, self._model, prompt,
+                max_tokens=max_tokens,
+            )
+            if result and "searches" in result:
+                searches = result["searches"]
+                if isinstance(searches, list) and len(searches) > 0:
+                    valid: list[dict] = []
+                    for s in searches:
+                        if isinstance(s, dict) and "branch" in s:
+                            valid.append({
+                                "branch": s["branch"],
+                                "days": int(s.get("days", 3)),
+                            })
+                    if valid:
+                        _logger.debug("Navigate LLM selected: %s", valid)
+                        return valid
+        except Exception as exc:
+            _logger.warning("Navigate LLM failed: %s", exc)
+        return None
+
+
+def _call_llm(api_base: str, api_key: str, model: str, prompt: str,
+              max_tokens: int = 256) -> dict | None:
     from memory_skill._llm_utils import call_llm, parse_json_response
     import logging
-    raw = call_llm(api_base, api_key, model, prompt, max_tokens=256, temperature=0.0)
+    raw = call_llm(api_base, api_key, model, prompt,
+                   max_tokens=max_tokens, temperature=0.0)
     if raw:
         result = parse_json_response(raw)
         return result if isinstance(result, dict) else None
