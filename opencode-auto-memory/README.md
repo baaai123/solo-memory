@@ -9,6 +9,13 @@ Part of the [solo-memory](https://github.com/baaai123/solo-memory) project. This
 
 The agent never needs to remember to call `memory_weave`/`memory_ingest` — it's invisible.
 
+## Language support
+
+Language-agnostic plugin: works identically for Chinese or English conversations.
+Memory quality differs by signal (see solo-memory README): Chinese is served mainly
+by BM25 (jieba), English mainly by semantic vectors (bge-large-en-v1.5). Both
+languages are stored and retrievable in the same database.
+
 ## Install
 
 ```bash
