@@ -1,5 +1,7 @@
 # Memory Skill
 
+[English](README.en.md) | [中文](README.md)
+
 **为 AI Agent 打造的长期记忆插件**（中文为主，中英双语可用）— 本地优先、双模型记忆、可自我进化。
 
 为 AI Agent（Claude / OpenAI / 自研 LLM）提供持久化的长期记忆：每次对话自动存取，检索时注入相关记忆上下文，检测知识缺口后主动学习。**零 API 检索**（本地向量检索），LLM 仅用于增强（分类/合成）。
