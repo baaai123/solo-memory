@@ -1,0 +1,8 @@
+{
+  "name": "opencode-auto-memory",
+  "version": "0.1.0",
+  "description": "Auto weave/ingest for memory-skill — no agent discipline required",
+  "type": "module",
+  "main": "./index.js",
+  "license": "Apache-2.0"
+}
