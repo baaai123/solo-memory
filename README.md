@@ -270,6 +270,8 @@ export OPENAI_API_BASE=http://127.0.0.1:8888/v1
 }
 ```
 
+> **Hermes Agent**：也支持 MCP——在 `mcp_servers` 配置段接入本 server 作为增强记忆（RRF 双信号检索 + 学习闭环）。配置见 [docs/INTEGRATION.md](docs/INTEGRATION.md#2b-hermes-agent-接入mcp-增强记忆)。
+
 ### 方式 4：自动记忆插件（推荐，agent 零感知）
 
 ```json

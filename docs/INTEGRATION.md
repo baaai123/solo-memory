@@ -61,6 +61,52 @@ Agent 设置 `OPENAI_API_BASE=http://127.0.0.1:8888/v1` 即可。记忆自动注
 
 **Cody** — 同 MCP 协议配置，参考平台文档。
 
+### 2b. Hermes Agent 接入（MCP 增强记忆）
+
+[Hermes Agent](https://hermesagent.org.cn/)（开源自托管 AI Agent，Nous Research）支持标准 MCP。我们的 MCP server 可直接接入，作为 Hermes 的**增强记忆系统**（RRF 双信号检索 + 学习闭环，替代或补充其自带记忆）。
+
+**配置** — 编辑 Hermes 配置文件（`~/.hermes/config.yaml` 或 `hermes setup`），添加 `mcp_servers` 段：
+```yaml
+mcp_servers:
+  solo_memory:
+    command: "/绝对路径/solo-memory/venv/bin/python"
+    args: ["-m", "memory_skill.mcp_server"]
+    env:
+      MEMORY_SKILL_DB_PATH: "/绝对路径/solo-memory/opencode_memory.db"
+      MEMORY_SKILL_AGENT: "hermes"
+      IMPORTANCE_API_KEY: "sk-xxx"
+      IMPORTANCE_API_BASE: "https://api.deepseek.com/v1"
+      IMPORTANCE_MODEL: "deepseek-v4-flash"
+```
+
+**建议工具过滤**（白名单）——只需暴露记忆核心 5 个工具：
+```yaml
+mcp_servers:
+  solo_memory:
+    command: "/绝对路径/solo-memory/venv/bin/python"
+    args: ["-m", "memory_skill.mcp_server"]
+    env:
+      MEMORY_SKILL_DB_PATH: "/绝对路径/solo-memory/opencode_memory.db"
+      MEMORY_SKILL_AGENT: "hermes"
+      IMPORTANCE_API_KEY: "sk-xxx"
+    include:
+      - memory_weave
+      - memory_search
+      - memory_ingest
+      - memory_status
+      - memory_gaps
+```
+
+**使用协议** — 让 Hermes 遵循（参考 [SKILL.md](../SKILL.md)）：
+```
+每次回复前:   memory_weave   → 注入记忆上下文
+重要交互后:   memory_ingest  → 存入记忆
+需要更多时:   memory_search  → 深度检索
+会话开始:     memory_status  → 健康检查
+```
+
+> **定位说明**：Hermes 自带长期记忆，本模块作为**增强记忆**接入——提供更精确的 RRF 双信号检索（BM25×2.5 + 语义×0.5）和主动学习闭环（知识缺口检测 → 爬取 → 合成 → 验证）。适合需要更强检索精度或跨 Agent 统一记忆的场景。
+
 ### 3. Python API
 
 ```python
