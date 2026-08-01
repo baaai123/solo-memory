@@ -403,7 +403,9 @@ class LearnedStore:
 
         Returns the new weight, or 0.5 if the entry doesn't exist.
         """
-        current = self.get_weight(entry_id) or 0.5
+        current = self.get_weight(entry_id)
+        if current is None:
+            return 0.5
         new = min(current + delta, cap)
         self.set_weight(entry_id, new)
         return new

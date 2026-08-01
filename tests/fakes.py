@@ -89,7 +89,8 @@ class InMemoryDialogueStore:
         return self._turns.get(turn_id)
 
     def get_recent(self, n: int = 5) -> list[DialogueTurn]:
-        return sorted(self._turns.values(), key=lambda t: t.timestamp, reverse=True)[:n]
+        # Mirror real DialogueStore: newest last (oldest→newest order)
+        return sorted(self._turns.values(), key=lambda t: t.timestamp)[-n:]
 
     def count(self) -> int:
         return len(self._turns)
