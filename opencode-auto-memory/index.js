@@ -1,5 +1,4 @@
 import { execFile, execSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -67,10 +66,13 @@ let pendingUser = "";
 export const opencodeAutoMemory = async ({ client }) => {
   return {
     "chat.message": async (input, output) => {
-      // Extract user text, then push a complete TextPart carrying the
-      // id/sessionID/messageID aggregate fields opencode's EventV2
-      // persistence requires. A bare {type, text} part fails save with
-      // SchemaError / InvalidDurableEvent.
+      // Append memory context to the user's own text part. We cannot push
+      // a new part here: EventV2 persistence requires parts to carry
+      // branded aggregate ids (id starts with "prt", sessionID "ses",
+      // messageID "msg"). Parts opencode generated already have valid
+      // id/sessionID, and messageID is assigned inside createUserMessage —
+      // input.messageID is undefined at hook time, so a manually built
+      // part can never satisfy the schema.
       try {
         const text = (output.parts || [])
           .filter((p) => p.type === "text")
@@ -81,14 +83,11 @@ export const opencodeAutoMemory = async ({ client }) => {
 
         const result = await runBridge(["weave"], text);
         if (result && result.ok && result.block) {
-          output.parts.push({
-            id: randomUUID(),
-            sessionID: input?.sessionID || "",
-            messageID: input?.messageID || "",
-            type: "text",
-            text: `[Memory Context]\n${result.block}`,
-            synthetic: true,
-          });
+          const textParts = (output.parts || []).filter((p) => p.type === "text");
+          const lastTextPart = textParts[textParts.length - 1];
+          if (lastTextPart) {
+            lastTextPart.text = `${lastTextPart.text}\n\n[Memory Context]\n${result.block}`;
+          }
           pendingUser = text;
         }
       } catch { /* non-fatal: memory must never break chat */ }
