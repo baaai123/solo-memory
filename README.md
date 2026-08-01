@@ -117,10 +117,30 @@ pip install -r requirements.txt
 复制 `.env.example` 为 `.env` 并填入：
 
 ```
-IMPORTANCE_API_KEY=sk-xxx       # LLM 分类/合成用（DeepSeek 等）
+IMPORTANCE_API_KEY=sk-xxx       # LLM 分类/合成用
 MEMORY_SKILL_DB_PATH=memory.db  # 数据库路径
 MEMORY_MODEL_PATH=models/bge-large-en-v1.5
 ```
+
+#### LLM 模型配置（默认 DeepSeek V4 Flash，可换任意 OpenAI 兼容模型）
+
+系统通过 OpenAI 兼容接口调用 LLM（用于记忆分类/合成/学习）。**默认指向 DeepSeek V4 Flash，但你可以用任何 OpenAI 兼容模型/服务**——只需改 3 个环境变量：
+
+```bash
+IMPORTANCE_API_BASE=https://api.deepseek.com/v1   # API 地址（OpenAI 兼容）
+IMPORTANCE_API_KEY=sk-xxx                          # 你的 key
+IMPORTANCE_MODEL=deepseek-v4-flash                 # 模型名
+
+# 示例：换 OpenAI
+# IMPORTANCE_API_BASE=https://api.openai.com/v1
+# IMPORTANCE_MODEL=gpt-4o-mini
+
+# 示例：换本地 vLLM / Ollama
+# IMPORTANCE_API_BASE=http://127.0.0.1:8000/v1
+# IMPORTANCE_MODEL=qwen2.5-7b-instruct
+```
+
+> 兼容任何提供 `/v1/chat/completions` 的服务（OpenAI、Qwen、GLM、Moonshot、本地 vLLM 等）。默认值经过 DeepSeek V4 Flash 调优（如 `max_tokens` 预留），换模型后若分类/合成结果异常，可调整 `IMPORTANCE_*` 相关参数。
 
 ---
 

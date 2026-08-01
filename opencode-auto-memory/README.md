@@ -38,7 +38,9 @@ dialogue — the agent never calls memory tools manually.
 
 The AI clones, sets up, and registers the plugin on its own. The only manual
 step is filling `.env` with **your own LLM API key** (used for classification /
-synthesis / learning, billed to your own API account).
+synthesis / learning, billed to your own API account). Any OpenAI-compatible
+model works — the default is DeepSeek V4 Flash; set `IMPORTANCE_API_BASE` /
+`IMPORTANCE_MODEL` in `.env` to switch (OpenAI, Qwen, GLM, local vLLM, …).
 
 ### Option B: manual install
 
