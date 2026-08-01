@@ -56,11 +56,52 @@ class MemorySystem:
 
     # ── Convenience methods (thin delegates, no new logic) ──────────────
 
+    def ingest_staged(self, turn) -> dict:
+        """Ingest a turn through isolated stages.
+
+        Returns per-stage status so partial success is visible:
+        ``{"stored": envelope, "title": bool, "extracted": bool, "errors": [...]}``.
+        A failure in the LLM stages (tag/extract) does not roll back the
+        committed dialogue — it is reported, not swallowed and not fatal.
+        """
+        from memory_skill.memory_extract import extract_structured, tag_title
+
+        errors: list[str] = []
+
+        try:
+            stored = self.ingestor.ingest_dialogue(turn)
+        except Exception as exc:
+            return {"stored": None, "title": False, "extracted": False,
+                    "errors": [f"store: {type(exc).__name__}: {exc}"]}
+
+        title_ok = True
+        try:
+            tag_title(self, turn)
+        except Exception as exc:
+            title_ok = False
+            errors.append(f"title: {type(exc).__name__}: {exc}")
+
+        extract_ok = True
+        try:
+            extract_structured(self, turn)
+        except Exception as exc:
+            extract_ok = False
+            errors.append(f"extract: {type(exc).__name__}: {exc}")
+
+        return {"stored": stored, "title": title_ok,
+                "extracted": extract_ok, "errors": errors}
+
     def ingest(self, turn) -> object:
         result = self.ingestor.ingest_dialogue(turn)
         from memory_skill.memory_extract import extract_structured, tag_title
-        tag_title(self, turn)
-        extract_structured(self, turn)
+        try:
+            tag_title(self, turn)
+        except Exception as exc:
+            _logger.warning("Ingest tag_title stage failed: %s", exc)
+        try:
+            extract_structured(self, turn)
+        except Exception as exc:
+            _logger.warning("Ingest extract_structured stage failed: %s", exc)
         return result
 
     def retrieve(self, query: str, limit: int = 10, filters=None,
