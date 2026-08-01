@@ -36,3 +36,6 @@ build/
 
 # Internal planning docs
 .omo/
+
+# OpenCode project plugins (user-level, not repo)
+.opencode/

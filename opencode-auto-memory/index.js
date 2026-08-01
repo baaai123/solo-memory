@@ -5,9 +5,10 @@ import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Project root = parent of this plugin dir (opencode-auto-memory/../)
+// Project root: env override, else the solo-memory repo (this plugin ships
+// inside it; when copied to opencode's plugins dir, __dirname is wrong).
 const PROJECT = process.env.MEMORY_SKILL_PROJECT
-  || path.dirname(__dirname);
+  || "/home/pc/projects/memory/memory for solo";
 const DB = process.env.MEMORY_SKILL_DB_PATH
   || path.join(PROJECT, "opencode_memory.db");
 const VENV = path.join(PROJECT, "venv");
