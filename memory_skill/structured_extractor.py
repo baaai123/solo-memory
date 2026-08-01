@@ -19,15 +19,18 @@ Examples:
 "I like iced coffee every afternoon" → {{"type":"pref","key":"饮品","value":"冰美式"}}
 "Learning FastAPI deployment with uvicorn" → {{"type":"skill","title":"FastAPI 部署","goal":"掌握 uvicorn 和 nginx 部署"}}
 "You're too verbose, be brief" → {{"type":"pers","trait":"简洁"}}
+"整理 D:\\game\\fallout 整合包" → {{"type":"mission","title":"整理 fallout 整合包","deadline":"","priority":""}}
 "Need to finish the report by Friday" → {{"type":"mission","title":"写周报","deadline":"周五","priority":"high"}}
 "Nice weather today" → {{"type":"none"}}
 
 Rules:
 - skill: A topic the user is learning. goal=what they want to master.
-- mission: Task with deadline and priority.
+- mission: Anything the user asks you to do — a task in progress.
+  deadline and priority are optional (empty if absent). An explicit
+  request to do something is a mission even without a deadline.
 - pref: Topic is generic (饮品/工作), value is the specific preference.
 - pers: Single word or short phrase. Agent style feedback.
-- none: Everything else.
+- none: Everything else (casual chat, status updates, questions).
 """
 
 
