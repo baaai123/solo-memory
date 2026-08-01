@@ -282,13 +282,15 @@ class Retriever:
     def _turn_to_entry(turn: DialogueTurn) -> MemoryEntry:
         """Convert a ``DialogueTurn`` into a ``MemoryEntry`` for unified ranking.
 
-        The entry id is prefixed with ``"dialogue_"`` to avoid collisions
-        with learned-store entries.
+        The entry id mirrors the learned-store format (``dialogue:<turn.id>``)
+        so feedback/boost_weight lookups by id resolve to the same chroma
+        entry.  A divergent prefix (e.g. ``dialogue_``) would make boosts
+        silently no-op.
         """
         from memory_skill.contracts import MemoryEntry
 
         return MemoryEntry(
-            id=f"dialogue_{turn.id}",
+            id=f"dialogue:{turn.id}",
             content=turn.content,
             created_at=turn.timestamp,
             updated_at=turn.timestamp,
