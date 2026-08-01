@@ -37,7 +37,7 @@ def classify_and_extract(api_base: str, api_key: str, model: str,
 
     prompt = _EXTRACT_PROMPT.format(content=content[:500])
     for _ in range(3):
-        raw = call_llm(api_base, api_key, model, prompt, max_tokens=256, temperature=0.0)
+        raw = call_llm(api_base, api_key, model, prompt, max_tokens=1024, temperature=0.0)
         if raw:
             result = parse_json_response(raw)
             if isinstance(result, dict) and "type" in result:
