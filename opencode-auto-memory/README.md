@@ -1,13 +1,27 @@
 # opencode-solo-memory
 
-**Transparent long-term memory for OpenCode** — auto weave/ingest, no agent discipline required.
+**Automatic long-term memory for OpenCode** — auto-ingest on every turn, injection via memory protocol.
 
-Part of the [solo-memory](https://github.com/baaai123/solo-memory) project. This plugin makes the agent's memory **fully automatic**:
+Part of the [solo-memory](https://github.com/baaai123/solo-memory) project. This plugin:
 
-- `chat.message` hook → auto-injects memory context (weave) before every turn
-- `event` hook → auto-stores user+assistant pair (ingest) after each reply
+- `event` hook → **auto-stores** user+assistant pairs after each reply (fully automatic, no side effects)
+- `chat.message` hook → captures pending user text for pairing (does **not** modify the message)
 
-The agent never needs to remember to call `memory_weave`/`memory_ingest` — it's invisible.
+**Memory injection** is done the clean way — through the memory protocol, not message mutation:
+opencode's `prompt_append` tells the agent to call `memory_weave` (MCP tool) before responding.
+The agent retrieves and weaves the context into its own reasoning. This avoids the EventV2
+branded-part schema issue entirely (see below) and keeps user messages untouched.
+
+## Why not inject in the plugin?
+
+OpenCode v1.18 EventV2 persistence requires every part to carry branded aggregate ids
+(`prt_` for part, `ses_` for session, `msg_` for message). At `chat.message` hook time:
+- a manually constructed part can never satisfy the schema (id must be `prt_`-prefixed),
+- `messageID` is assigned inside `createUserMessage` — it's `undefined` during the hook,
+- appending to the user's text part pollutes their message.
+
+So message-level injection is impossible/ugly in the current plugin API. The protocol
+approach (system prompt + MCP tool) is the clean equivalent.
 
 ## Language support
 
@@ -84,11 +98,14 @@ On first use, the plugin auto-creates the venv and installs `requirements.txt` i
 ## How it works
 
 ```
-user message → chat.message hook → bridge.py weave → [Memory Context] injected
-assistant reply → event hook → bridge.py ingest_pair → both turns stored
+injection:  prompt_append protocol → agent calls memory_weave (MCP) → context in its reasoning
+storage:    user message → chat.message hook (captures text)
+            assistant reply → event hook → bridge.py ingest_pair → both turns stored
 ```
 
-`bridge.py` runs the real `MemorySkill` API in-process — no MCP, no protocol overhead. All failures are non-fatal: memory never breaks chat.
+`bridge.py` runs the real `MemorySkill` API in-process for storage — no MCP, no protocol overhead.
+Injection uses the MCP `memory_weave` tool per the system prompt protocol. All failures are
+non-fatal: memory never breaks chat.
 
 ## License
 

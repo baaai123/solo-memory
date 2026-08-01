@@ -65,32 +65,25 @@ let pendingUser = "";
 
 export const opencodeAutoMemory = async ({ client }) => {
   return {
-    "chat.message": async (input, output) => {
-      // Append memory context to the user's own text part. We cannot push
-      // a new part here: EventV2 persistence requires parts to carry
-      // branded aggregate ids (id starts with "prt", sessionID "ses",
-      // messageID "msg"). Parts opencode generated already have valid
-      // id/sessionID, and messageID is assigned inside createUserMessage —
-      // input.messageID is undefined at hook time, so a manually built
-      // part can never satisfy the schema.
+    // Memory injection is NOT done here. We cannot push a new part at
+    // chat.message time: EventV2 requires branded ids (prt_/ses_/msg_) and
+    // messageID is assigned inside createUserMessage — a manually built
+    // part can never satisfy the schema, and appending to the user's text
+    // part pollutes their message. Instead, injection happens through the
+    // memory protocol: the system prompt (prompt_append) tells the agent to
+    // call memory_weave (MCP tool) before responding, and the agent weaves
+    // the retrieved context into its own reasoning. This plugin only
+    // captures the pending user text so the event hook can auto-ingest.
+
+    "chat.message": async (_input, output) => {
       try {
         const text = (output.parts || [])
           .filter((p) => p.type === "text")
           .map((p) => p.text || "")
           .join("\n")
           .trim();
-        if (!text) return;
-
-        const result = await runBridge(["weave"], text);
-        if (result && result.ok && result.block) {
-          const textParts = (output.parts || []).filter((p) => p.type === "text");
-          const lastTextPart = textParts[textParts.length - 1];
-          if (lastTextPart) {
-            lastTextPart.text = `${lastTextPart.text}\n\n[Memory Context]\n${result.block}`;
-          }
-          pendingUser = text;
-        }
-      } catch { /* non-fatal: memory must never break chat */ }
+        if (text) pendingUser = text;
+      } catch { /* non-fatal */ }
     },
 
     event: async ({ event }) => {
