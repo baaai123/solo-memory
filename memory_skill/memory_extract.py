@@ -34,7 +34,8 @@ def extract_structured(ms, turn) -> None:
         ingest_skill_ex(ms, result.get("title", ""),
                         f"# {result.get('title', '')}\n\n学习目标: {result.get('goal', '')}")
     elif t == "mission":
-        ingest_mission_ex(ms, result.get("title", ""), result.get("summary", ""))
+        ingest_mission_ex(ms, result.get("title", ""),
+                          result.get("summary") or turn.content)
 
 
 def generate_title(ms, content: str) -> str:
