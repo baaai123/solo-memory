@@ -24,6 +24,29 @@ _MIN_CONFIDENCE = 0.5
 
 _STATUS_ORDER = ("pending", "crawling", "synthesizing", "verifying", "done", "failed")
 
+# Pages that block scraping return these markers instead of real content.
+# Treating them as valid sources would ingest garbage and report a fake
+# "done" via the verify leg.
+_ANTI_BOT_MARKERS = (
+    "client challenge",
+    "verify you are human",
+    "attention required",
+    "captcha",
+    "cf-chl",
+    "enable javascript and cookies",
+    "that page doesn't exist",
+    "404 not found",
+    "access denied",
+    "forbidden",
+    "blocked",
+)
+
+
+def _is_anti_bot_or_error(text: str) -> bool:
+    """True if *text* looks like an anti-bot challenge or error page."""
+    t = (text or "").lower()
+    return any(marker in t for marker in _ANTI_BOT_MARKERS)
+
 
 @dataclass
 class LearningTask:
@@ -92,7 +115,12 @@ class LearningTaskManager:
                 try:
                     chunks = self._crawler.crawl(url)
                     if chunks:
-                        chunks_by_url[url] = chunks
+                        valid = [
+                            c for c in chunks
+                            if not _is_anti_bot_or_error(c.text)
+                        ]
+                        if valid:
+                            chunks_by_url[url] = valid
                 except Exception as exc:
                     logger.warning("Crawl failed for %s: %s", url, exc)
 
