@@ -150,7 +150,7 @@ class LearningTaskManager:
                 except Exception as exc:
                     logger.warning("Skill ingest failed: %s", exc)
 
-            # 4. Verify — closed loop
+            # 4. Verify — the learned topic must be retrievable.
             task._set_status("verifying")
             can, confidence = self._registry.can_answer(task.gap_query)
 
