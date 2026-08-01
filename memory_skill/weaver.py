@@ -24,18 +24,36 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol, TYPE_CHECKING
+
 from memory_skill.contracts import (
     DialogueStoreProtocol,
     LearnedStoreProtocol,
     SawBufferProtocol,
     TreeManagerProtocol,
 )
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memory_skill.retriever import Retriever
 
 _logger = logging.getLogger(__name__)
+
+
+# ── Narrow protocols: each builder takes only what it needs ──
+
+class RetrievalSource(Protocol):
+    def retrieve(self, query: str, limit: int = 10, filters=None): ...
+
+
+class DialogueSource(Protocol):
+    def get_recent(self, n: int = 5): ...
+    def get_by_id(self, turn_id: str): ...
+    def count(self) -> int: ...
+    def count_recent(self, minutes: int = 5) -> int: ...
+
+
+class MemorySource(Protocol):
+    def search(self, query: str, limit: int = 10, filters=None): ...
 
 
 @dataclass
@@ -150,12 +168,13 @@ def weave(
     """
     now = datetime.now()
     ctx = WeaveContext(time_context=f"[现在时间] {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    ns = _resolve_namespace(stores, partner)
-    turn_count = _count_recent_turns(stores)
+    ns = _resolve_namespace(stores.agent_name, stores.namespace, partner)
+    turn_count = _count_recent_turns(stores.dialogue_store)
 
-    ctx.tier1_context = _build_tier1(stores, scene_summary)
+    ctx.tier1_context = _build_tier1(
+        stores.dialogue_store, stores.saw_buffer, stores.agent_name, scene_summary)
 
-    total_stored = _count_all_dialogue(stores)
+    total_stored = _count_all_dialogue(stores.dialogue_store)
     if turn_count < 3 and total_stored == 0:
         return ctx  # no history at all — tier1 only
 
@@ -164,45 +183,48 @@ def weave(
 
     if turn_count <= 10:
         if user_message:
-            ctx.tier2_context = _build_tier2(stores, user_message, ns)
-        ctx.emotion_context = _build_emotion_context(stores, partner)
-        ctx.memory_nudge = _build_nudge(stores)
-        ctx.skill_context = _build_skill_context(stores, user_message)
-        ctx.mission_context = _build_mission_context(stores, user_message)
-        ctx.pref_context = _build_pref_context(stores)
-        ctx.pers_context = _build_pers_context(stores)
-        ctx.gap_context = _build_gap_context(stores)
-        ctx.title_preview = _build_title_preview(stores)
+            ctx.tier2_context = _build_tier2(
+                stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
+        ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
+        ctx.memory_nudge = _build_nudge(stores.learned_store)
+        ctx.skill_context = _build_skill_context(stores.retriever, user_message)
+        ctx.mission_context = _build_mission_context(stores.retriever, user_message)
+        ctx.pref_context = _build_pref_context(stores.retriever)
+        ctx.pers_context = _build_pers_context(stores.retriever)
+        ctx.gap_context = _build_gap_context(stores.gaps)
+        ctx.title_preview = _build_title_preview(stores.retriever)
         return ctx
 
     # deep
     if user_message:
-        ctx.tier2_context = _build_tier2(stores, user_message, ns)
-    ctx.emotion_context = _build_emotion_context(stores, partner)
-    ctx.memory_nudge = _build_nudge(stores)
-    ctx.skill_context = _build_skill_context(stores, user_message)
-    ctx.mission_context = _build_mission_context(stores, user_message)
-    ctx.pref_context = _build_pref_context(stores)
-    ctx.pers_context = _build_pers_context(stores)
-    ctx.gap_context = _build_gap_context(stores)
-    if _has_high_weight(stores):
+        ctx.tier2_context = _build_tier2(
+            stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
+    ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
+    ctx.memory_nudge = _build_nudge(stores.learned_store)
+    ctx.skill_context = _build_skill_context(stores.retriever, user_message)
+    ctx.mission_context = _build_mission_context(stores.retriever, user_message)
+    ctx.pref_context = _build_pref_context(stores.retriever)
+    ctx.pers_context = _build_pers_context(stores.retriever)
+    ctx.gap_context = _build_gap_context(stores.gaps)
+    if _has_high_weight(stores.learned_store):
         ctx.needs_second_pass = True
     return ctx
 
 
 # ── Tier builders ────────────────────────────────────
 
-def _build_tier1(stores: WeaverStores, scene_summary: str) -> str:
+def _build_tier1(dialogue: DialogueSource, saw: SawBufferProtocol,
+                 agent_name: str, scene_summary: str) -> str:
     parts: list[str] = []
     if scene_summary:
         parts.append(f"[当前场景] {scene_summary}")
     else:
-        entries = stores.saw_buffer.get_all()
+        entries = saw.get_all()
         if entries:
             parts.append(f"[当前感知] {entries[-1].content[:_TIER1_MAX_CHARS]}")
-    turns = stores.dialogue_store.get_recent(_MAX_RECENT_TURNS)
+    turns = dialogue.get_recent(_MAX_RECENT_TURNS)
     if turns:
-        agent_label = stores.agent_name or "助手"
+        agent_label = agent_name or "助手"
         lines = [f"[{t.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {'用户' if t.role == 'user' else agent_label}: {t.content[:80]}"
                  for t in turns[-_MAX_RECENT_TURNS:]]
         parts.append("[最近对话]\n" + "\n".join(lines))
@@ -210,7 +232,8 @@ def _build_tier1(stores: WeaverStores, scene_summary: str) -> str:
     return result[:_TIER1_MAX_CHARS + 100]
 
 
-def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
+def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
+                 agent_name: str, user_message: str, ns: str = "") -> str:
     """Build tier2 context — conversation units with surrounding dialogue.
 
     V9: Each retrieved fact is expanded into a conversation unit that shows
@@ -222,10 +245,10 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
         return ""
     try:
         if ns:
-            envelope = stores.retriever.retrieve(
+            envelope = retriever.retrieve(
                 user_message, limit=4, filters={"category": ns})
         else:
-            envelope = stores.retriever.retrieve(user_message, limit=4)
+            envelope = retriever.retrieve(user_message, limit=4)
     except Exception as e:
         _logger.warning("Tier2 retrieval failed: %s", e)
         return ""
@@ -234,8 +257,7 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
 
     units: list[str] = []
     seen_units: set[str] = set()
-    agent_name = stores.agent_name
-    ds = stores.dialogue_store
+    ds = dialogue
 
     for e in envelope.entries:  # skip non-dialogue entries (e.g. persona card) to find a buildable unit
         turn_id = e.metadata.get("turn_id", "") if e.metadata else ""
@@ -310,7 +332,7 @@ def _build_tier2(stores: WeaverStores, user_message: str, ns: str = "") -> str:
 
 
 def _build_emotion_context(
-    stores: WeaverStores,
+    outcomes: list,
     partner: str | None = None,
 ) -> str:
     """Derive emotional bias from partner memory history.
@@ -327,7 +349,7 @@ def _build_emotion_context(
 
     try:
         # Count recent outcomes for this partner
-        outcomes = stores.emotion_outcomes[-50:]  # last 50 feedback events
+        outcomes = outcomes[-50:]  # last 50 feedback events
         positive = 0
         negative = 0
         for outcome in outcomes:
@@ -355,9 +377,9 @@ def _build_emotion_context(
         return f"[你当前对{partner}的感受] 好感度偏低——与{partner}的互动常有不快。语气可以冷淡或回避。"
 
 
-def _build_observation_section(stores: WeaverStores, user_message: str) -> str:
+def _build_observation_section(memory: MemorySource, user_message: str) -> str:
     try:
-        obs = stores.learned_store.search(
+        obs = memory.search(
             "", limit=5, filters={"category": "observation"})
     except Exception as e:
         _logger.debug("Observation section failed: %s", e)
@@ -367,7 +389,7 @@ def _build_observation_section(stores: WeaverStores, user_message: str) -> str:
     return "\n".join(lines) if lines else ""
 
 
-def _build_nudge(stores: WeaverStores) -> str:
+def _build_nudge(memory: MemorySource) -> str:
     """Build nudge with behavioral intensity based on weight.
 
     V7 upgrade:
@@ -375,7 +397,7 @@ def _build_nudge(stores: WeaverStores) -> str:
       weight >= 0.85 → "💡 可以...——让对话更自然"
     """
     try:
-        entries = stores.learned_store.search(
+        entries = memory.search(
             "", limit=_NUDGE_MAX_ITEMS * 3,
             filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD}})
     except Exception as e:
@@ -402,33 +424,33 @@ def _build_nudge(stores: WeaverStores) -> str:
 
 # ── Helpers ──────────────────────────────────────────
 
-def _resolve_namespace(stores: WeaverStores, partner: str | None) -> str:
-    if stores.agent_name:
-        return stores.agent_name
-    return stores.namespace
+def _resolve_namespace(agent_name: str, namespace: str, partner: str | None) -> str:
+    if agent_name:
+        return agent_name
+    return namespace
 
 
-def _count_all_dialogue(stores: WeaverStores) -> int:
+def _count_all_dialogue(dialogue: DialogueSource) -> int:
     """Count total stored dialogue turns (across all sessions)."""
     try:
-        return stores.dialogue_store.count()
+        return dialogue.count()
     except Exception as e:
         _logger.debug("Total dialogue count failed: %s", e)
         return 0
 
 
-def _count_recent_turns(stores: WeaverStores) -> int:
+def _count_recent_turns(dialogue: DialogueSource) -> int:
     """Count turns from the last 5 minutes — approximates "current session"."""
     try:
-        return stores.dialogue_store.count_recent(minutes=5)
+        return dialogue.count_recent(minutes=5)
     except Exception as e:
         _logger.debug("Recent turn count failed: %s", e)
         return 0
 
 
-def _has_high_weight(stores: WeaverStores) -> bool:
+def _has_high_weight(memory: MemorySource) -> bool:
     try:
-        entries = stores.learned_store.search(
+        entries = memory.search(
             "", limit=5,
             filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD}})
         return any(e.weight >= _NUDGE_WEIGHT_THRESHOLD for e in entries)
@@ -437,42 +459,42 @@ def _has_high_weight(stores: WeaverStores) -> bool:
         return False
 
 
-def _build_tree_context(stores: WeaverStores, user_message: str) -> str:
+def _build_tree_context(tree, user_message: str) -> str:
     """Build tree context from the memory tree for agent injection.
 
     Delegates to TreeManager.get_context() which finds relevant branches
     by label similarity to the query and returns siblings + parent labels.
     """
-    if not stores.tree or not user_message:
+    if not tree or not user_message:
         return ""
     try:
-        return stores.tree.get_context(user_message)
+        return tree.get_context(user_message)
     except Exception as e:
         _logger.debug("Tree context retrieval failed: %s", e)
         return ""
 
 
-def _build_tree_nav(stores: WeaverStores, user_message: str) -> str:
+def _build_tree_nav(tree, user_message: str) -> str:
     """Build LLM-navigated tree context in parallel with RRF retrieval.
 
     Delegates to TreeManager.navigate() which uses LLM to select relevant
     branches + time ranges, falling back to all branches on failure.
     """
-    if not stores.tree or not user_message:
+    if not tree or not user_message:
         return ""
     try:
-        return stores.tree.navigate(user_message)
+        return tree.navigate(user_message)
     except Exception as e:
         _logger.debug("Tree navigation failed: %s", e)
         return ""
 
 
-def _build_skill_context(stores, user_message: str) -> str:
+def _build_skill_context(retriever: RetrievalSource, user_message: str) -> str:
     """Retrieve relevant skill titles for agent awareness."""
     if not user_message:
         return ""
     try:
-        result = stores.retriever.retrieve(
+        result = retriever.retrieve(
             user_message, limit=5,
             filters={"category": "skill"},
         )
@@ -490,8 +512,8 @@ def _build_skill_context(stores, user_message: str) -> str:
     return "[已掌握的技能]\n  · " + "\n  · ".join(titles)
 
 
-def _build_mission_context(stores, user_message: str) -> str:
-    result = stores.retriever.retrieve(
+def _build_mission_context(retriever: RetrievalSource, user_message: str) -> str:
+    result = retriever.retrieve(
         user_message, limit=2,
         filters={"category": "mission"},
     )
@@ -519,7 +541,7 @@ def _build_mission_context(stores, user_message: str) -> str:
                     break
             skill_hint = ""
             if skill_name:
-                has = stores.retriever.retrieve(skill_name, limit=5, filters={"category": "skill"})
+                has = retriever.retrieve(skill_name, limit=5, filters={"category": "skill"})
                 found = False
                 for sk in has.entries:
                     if skill_name.lower() in sk.content.lower()[:100]:
@@ -530,8 +552,7 @@ def _build_mission_context(stores, user_message: str) -> str:
     return "\n".join(lines)
 
 
-def _build_gap_context(stores) -> str:
-    gaps = getattr(stores, 'gaps', [])
+def _build_gap_context(gaps: list) -> str:
     if not gaps:
         return ""
     recent = gaps[-5:]
@@ -549,9 +570,9 @@ def _build_gap_context(stores) -> str:
     return "\n".join(lines)
 
 
-def _build_pref_context(stores) -> str:
+def _build_pref_context(retriever: RetrievalSource) -> str:
     try:
-        result = stores.retriever.retrieve("all", limit=10, filters={"category": "pref"})
+        result = retriever.retrieve("all", limit=10, filters={"category": "pref"})
     except Exception:
         return ""
     if not result.entries:
@@ -562,9 +583,9 @@ def _build_pref_context(stores) -> str:
     return "\n".join(lines)
 
 
-def _build_pers_context(stores) -> str:
+def _build_pers_context(retriever: RetrievalSource) -> str:
     try:
-        result = stores.retriever.retrieve("all", limit=10, filters={"category": "pers"})
+        result = retriever.retrieve("all", limit=10, filters={"category": "pers"})
     except Exception:
         return ""
     if not result.entries:
@@ -574,8 +595,8 @@ def _build_pers_context(stores) -> str:
     return "[人格特征]\n  · " + latest.content
 
 
-def _build_title_preview(stores) -> str:
-    entries = stores.retriever.retrieve("all", limit=5)
+def _build_title_preview(retriever: RetrievalSource) -> str:
+    entries = retriever.retrieve("all", limit=5)
     if not entries.entries:
         return ""
     lines = ["[近期记忆]"]
