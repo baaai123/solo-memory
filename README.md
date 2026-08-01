@@ -126,24 +126,46 @@ MEMORY_MODEL_PATH=models/bge-large-en-v1.5
 
 ## 使用教程（从零到会用）
 
-> 下面以 **OpenCode + MCP 方式** 为例，展示完整接入流程。其他 Agent（Claude Code / Cursor）流程相同，只是配置文件名不同。
+### 方式 A：让 AI 自己安装（最快，推荐）
 
-### 第 1 步：下载并安装
+把仓库 URL 直接交给你的 AI Agent，告诉它：
 
-```bash
-git clone <your-repo-url> memory-skill
-cd memory-skill
+```
+安装 https://github.com/baaai123/solo-memory 并接入我的 OpenCode。
 
-# 创建虚拟环境并安装依赖（含 ONNX 嵌入）
-python3 -m venv venv
-source venv/bin/activate
-pip install -e ".[onnx]"
+步骤：
+1. git clone https://github.com/baaai123/solo-memory
+2. 运行 ./setup.sh（创建 venv + 安装依赖 + 配置嵌入模型）
+3. 在 opencode.json 注册插件 opencode-auto-memory
+4. 需要我提供 IMPORTANCE_API_KEY 时告诉我
 
-# 下载嵌入模型（bge-large-en-v1.5 → models/）
-./download_model.sh
+注：./setup.sh 一键完成环境搭建；opencode-auto-memory 插件会自动注入记忆
+上下文并自动存储对话，Agent 无需手动调用记忆工具。
 ```
 
-### 第 2 步：配置密钥
+AI 会自主完成 clone → 环境搭建 → 插件注册。你只需在它要求时提供 `IMPORTANCE_API_KEY`（唯一的必填凭据）。
+
+> **为什么可行**：`setup.sh` 已封装环境搭建；`opencode-auto-memory` 插件含首次运行自动引导（venv 缺失时自动创建）。唯一人肉步骤是提供 API key——任何记忆系统都无法替你保管私钥。
+
+### 方式 B：手动安装（逐步）
+
+> 下面以 **OpenCode + 自动记忆插件** 为例。其他 Agent（Claude Code / Cursor）流程相同，只是配置文件名不同。
+
+#### 第 1 步：下载并安装
+
+```bash
+git clone https://github.com/baaai123/solo-memory
+cd solo-memory
+
+# 一键环境搭建（创建 venv + 安装依赖 + 配置嵌入模型）
+./setup.sh
+
+# 或手动：
+# python3 -m venv venv && source venv/bin/activate && pip install -e ".[onnx]"
+# ./download_model.sh   # bge-large-en-v1.5 → models/
+```
+
+#### 第 2 步：配置密钥
 
 ```bash
 cp .env.example .env
@@ -151,7 +173,7 @@ cp .env.example .env
 # IMPORTANCE_API_KEY=sk-xxx
 ```
 
-### 第 3 步：把 SKILL.md 交给 Agent
+#### 第 3 步：把 SKILL.md 交给 Agent
 
 `SKILL.md` 是 Agent 的记忆使用协议——把它放进你的 Agent 知识库，或在配置中引用：
 
@@ -168,28 +190,23 @@ AFTER 重要交互:      memory_ingest(role, content) → 存入记忆
 会话开始:            memory_status                 → 健康检查
 ```
 
-### 第 4 步：配置 MCP 服务器
+#### 第 4 步：注册自动记忆插件
 
-在 Agent 的 MCP 配置中注册（OpenCode 示例）：
+在 `~/.config/opencode/opencode.json` 的 `plugin` 数组加入插件路径：
 
 ```json
 {
-  "mcp": {
-    "opencode-memory": {
-      "type": "local",
-      "command": ["/abs/path/memory-skill/venv/bin/python", "-m", "memory_skill.mcp_server"],
-      "environment": {
-        "MEMORY_SKILL_DB_PATH": "/abs/path/memory-skill/memory.db",
-        "IMPORTANCE_API_KEY": "sk-xxx"
-      }
-    }
-  }
+  "plugin": [
+    "/abs/path/to/solo-memory/opencode-auto-memory"
+  ]
 }
 ```
 
-> ⚠️ 注意：`command` 必须用 **venv 的绝对路径 python**，并先 `pip install -e .`（否则 `memory_skill` 包无法 import）。详见 [docs/INTEGRATION.md](docs/INTEGRATION.md)。
+插件会自动注入记忆上下文（`chat.message` hook）并自动存储对话（`event` hook）——Agent 无需手动调工具。
 
-### 第 5 步：重启 Agent 并验证
+> 如需 MCP 工具方式（手动调用 `memory_search` 等），见下方 [快速开始 → 方式 2](#方式-2mcp-工具opencode--claude-code-等)。
+
+#### 第 5 步：重启 Agent 并验证
 
 重启 Agent 会话，让 Agent 调用记忆工具：
 
