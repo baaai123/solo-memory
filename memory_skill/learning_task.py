@@ -145,5 +145,27 @@ class LearningTaskManager:
         )
 
     def _expand_sources(self, topic: str, existing: list[str]) -> list[str]:
-        """Expand source list for retry — placeholder for future search integration."""
-        return existing  # Currently reuse same sources; future: search + append
+        """Expand source list for retry via LLM-suggested related URLs."""
+        try:
+            from memory_skill._llm_utils import call_llm
+            api_base = os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1")
+            api_key = os.getenv("IMPORTANCE_API_KEY", "")
+            model = os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash")
+            if not api_key:
+                return existing
+            raw = call_llm(
+                api_base, api_key, model,
+                f"Topic: {topic}. Suggest 3 authoritative documentation or "
+                "Wikipedia URLs for learning this topic. Return JSON list of "
+                'URL strings only: ["https://...", ...]',
+                max_tokens=300, temperature=0.2,
+            )
+            import json as _json
+            suggested = _json.loads(raw)
+            if isinstance(suggested, list):
+                new = [u for u in suggested if isinstance(u, str) and u.startswith("http")]
+                if new:
+                    return list(dict.fromkeys(existing + new))
+        except Exception as exc:
+            logger.warning("Source expansion failed: %s", exc)
+        return existing
