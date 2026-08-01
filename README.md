@@ -122,6 +122,85 @@ MEMORY_MODEL_PATH=models/bge-large-en-v1.5
 
 ---
 
+## 使用教程（从零到会用）
+
+> 下面以 **OpenCode + MCP 方式** 为例，展示完整接入流程。其他 Agent（Claude Code / Cursor）流程相同，只是配置文件名不同。
+
+### 第 1 步：下载并安装
+
+```bash
+git clone <your-repo-url> memory-skill
+cd memory-skill
+
+# 创建虚拟环境并安装依赖（含 ONNX 嵌入）
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[onnx]"
+
+# 下载嵌入模型（bge-large-en-v1.5 → models/）
+./download_model.sh
+```
+
+### 第 2 步：配置密钥
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入 LLM API Key（用于记忆分类/合成/学习）
+# IMPORTANCE_API_KEY=sk-xxx
+```
+
+### 第 3 步：把 SKILL.md 交给 Agent
+
+`SKILL.md` 是 Agent 的记忆使用协议——把它放进你的 Agent 知识库，或在配置中引用：
+
+- **OpenCode**: 放到项目根（Agent 自动读取 `AGENTS.md`/技能目录），或通过 `prompt_append` 注入协议
+- **Claude Code**: 放入 `CLAUDE.md` 引用，或作为 skill 文件
+- **Cursor**: 放入 `.cursor/rules/` 或项目 rules
+
+协议核心（SKILL.md 全文见仓库）：
+
+```
+BEFORE responding:   memory_weave(user_message)   → 注入记忆上下文
+AFTER 重要交互:      memory_ingest(role, content) → 存入记忆
+需要更多时:          memory_search(query)         → 深度检索
+会话开始:            memory_status                 → 健康检查
+```
+
+### 第 4 步：配置 MCP 服务器
+
+在 Agent 的 MCP 配置中注册（OpenCode 示例）：
+
+```json
+{
+  "mcp": {
+    "opencode-memory": {
+      "type": "local",
+      "command": ["/abs/path/memory-skill/venv/bin/python", "-m", "memory_skill.mcp_server"],
+      "environment": {
+        "MEMORY_SKILL_DB_PATH": "/abs/path/memory-skill/memory.db",
+        "IMPORTANCE_API_KEY": "sk-xxx"
+      }
+    }
+  }
+}
+```
+
+> ⚠️ 注意：`command` 必须用 **venv 的绝对路径 python**，并先 `pip install -e .`（否则 `memory_skill` 包无法 import）。详见 [docs/INTEGRATION.md](docs/INTEGRATION.md)。
+
+### 第 5 步：重启 Agent 并验证
+
+重启 Agent 会话，让 Agent 调用记忆工具：
+
+```
+# Agent 应能看到并调用这些工具：
+memory_search / memory_weave / memory_ingest / memory_status
+memory_feedback / memory_gaps / memory_learn
+```
+
+**快速验证**：让 Agent 说一句重要信息（如"我偏好用 Python 写后端"），重启会话后再问它——如果它还记得，说明记忆已生效。
+
+---
+
 ## 快速开始
 
 ### 方式 1：透明代理（Agent 零改动）
