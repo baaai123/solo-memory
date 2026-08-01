@@ -26,3 +26,10 @@ build/
 # ChromaDB stray
 *_chroma/
 :memory:*
+
+# Backup / editor files
+*.bak
+*.orig
+*.tmp
+.idea/
+.vscode/
