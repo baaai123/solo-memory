@@ -1,4 +1,5 @@
 import { execFile, execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -65,12 +66,11 @@ let pendingUser = "";
 
 export const opencodeAutoMemory = async ({ client }) => {
   return {
-    "chat.message": async (_input, output) => {
-      // Extract user text from parts; append memory context to the user's
-      // own text part instead of pushing a new part. A bare {type, text}
-      // object lacks the id/sessionID/messageID aggregate fields that
-      // opencode's EventV2 persistence requires, which made every user
-      // message fail to save with SchemaError / InvalidDurableEvent.
+    "chat.message": async (input, output) => {
+      // Extract user text, then push a complete TextPart carrying the
+      // id/sessionID/messageID aggregate fields opencode's EventV2
+      // persistence requires. A bare {type, text} part fails save with
+      // SchemaError / InvalidDurableEvent.
       try {
         const text = (output.parts || [])
           .filter((p) => p.type === "text")
@@ -81,11 +81,14 @@ export const opencodeAutoMemory = async ({ client }) => {
 
         const result = await runBridge(["weave"], text);
         if (result && result.ok && result.block) {
-          const textParts = (output.parts || []).filter((p) => p.type === "text");
-          const lastTextPart = textParts[textParts.length - 1];
-          if (lastTextPart) {
-            lastTextPart.text = `${lastTextPart.text}\n\n[Memory Context]\n${result.block}`;
-          }
+          output.parts.push({
+            id: randomUUID(),
+            sessionID: input?.sessionID || "",
+            messageID: input?.messageID || "",
+            type: "text",
+            text: `[Memory Context]\n${result.block}`,
+            synthetic: true,
+          });
           pendingUser = text;
         }
       } catch { /* non-fatal: memory must never break chat */ }
