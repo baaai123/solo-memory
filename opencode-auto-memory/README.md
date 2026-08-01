@@ -42,12 +42,14 @@ Install https://github.com/baaai123/solo-memory and hook it into my OpenCode.
 Steps:
 1. git clone https://github.com/baaai123/solo-memory
 2. Run ./setup.sh (creates venv + installs deps + configures embedding model)
-3. Register the opencode-auto-memory plugin in opencode.json
-4. Fill in .env with my own IMPORTANCE_API_KEY (my personal LLM API key)
+3. Copy this plugin into OpenCode's global plugin dir:
+   cp -r solo-memory/opencode-auto-memory ~/.config/opencode/plugins/opencode-solo-memory
+4. Set MEMORY_SKILL_PROJECT=solo-memory repo path (in shell or agent env)
+5. Fill in .env with my own IMPORTANCE_API_KEY (my personal LLM API key)
 
-Note: ./setup.sh handles the environment in one command; the
-opencode-auto-memory plugin auto-injects memory context and auto-stores
-dialogue — the agent never calls memory tools manually.
+Note: ./setup.sh handles the environment in one command; the plugin
+auto-stores dialogue via the event hook — the agent never calls memory
+tools manually.
 ```
 
 The AI clones, sets up, and registers the plugin on its own. The only manual
@@ -73,17 +75,19 @@ cp .env.example .env   # fill IMPORTANCE_API_KEY
 
 ## Configure OpenCode
 
-Add the plugin path to `~/.config/opencode/opencode.json`:
+OpenCode auto-loads plugins from `~/.config/opencode/plugins/`. Copy the
+plugin there (the `plugin` array in opencode.json only accepts npm package
+names — a bare filesystem path is ignored):
 
-```json
-{
-  "plugin": [
-    "/abs/path/to/solo-memory/opencode-auto-memory"
-  ]
-}
+```bash
+cp -r /abs/path/to/solo-memory/opencode-auto-memory \
+      ~/.config/opencode/plugins/opencode-solo-memory
+
+# Point the plugin at your solo-memory repo (venv + DB live there):
+export MEMORY_SKILL_PROJECT=/abs/path/to/solo-memory
 ```
 
-That's it. Restart OpenCode — memory is now automatic.
+Restart OpenCode — memory storage is now automatic via the `event` hook.
 
 ## Env overrides
 
