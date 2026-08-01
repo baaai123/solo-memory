@@ -496,7 +496,7 @@ class TreeManager:
                 continue
             rows = self._conn.execute(
                 "SELECT id, parent_id, root, label, level, memory_ref "
-                "FROM tree_nodes WHERE label LIKE ? AND level = 4 "
+                "FROM tree_nodes WHERE label LIKE ? "
                 "LIMIT 5",
                 (f"%{term}%",),
             ).fetchall()
