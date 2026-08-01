@@ -10,10 +10,65 @@ calling an LLM.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 logger = logging.getLogger("memory_skill.capability")
+
+
+# ── Answerability thresholds (calibrated 2026-08-02 on bge-large-en-v1.5) ──
+# Real-store calibration (KNOWN-ISSUES #1): the English BGE model is noisy on
+# Chinese — unrelated hits reach cosine 0.62-0.78, overlapping the 0.74-0.89
+# range of genuinely-relevant hits.  A pure semantic threshold therefore
+# cannot separate "knows" from "coincidental hit".  We pair the semantic
+# score with query↔content token overlap; see the KNOWN-ISSUES entry for the
+# full calibration table.
+
+# Semantic score alone is sufficient above this (overwhelmingly strong match).
+_SEM_STRONG = 0.85
+# Semantic score + corroborating token overlap is sufficient above this.
+_SEM_CORROBORATED = 0.72
+# Uncorroborated hits are damped: confidence reflects "weak evidence", so
+# gap detection treats them as gaps instead of answered.
+_UNCORROBORATED_DAMP = 0.5
+# Max semantic candidates considered by can_answer.
+_CAN_ANSWER_TOP_K = 5
+
+# CJK bigrams that carry no topical signal — pure question/function particles.
+# Without this filter a garbage query like "量子场论 是什么" would be
+# "corroborated" by the shared bigram "什么".
+_CN_STOP_BIGRAMS = frozenset({
+    "什么", "怎么", "如何", "哪个", "哪些", "为何", "多少", "多久",
+    "是不是", "有没有", "可不可", "是否", "能否", "可否",
+    "我们", "你们", "他们", "大家", "自己", "本人",
+    "这个", "那个", "一个", "一种", "一下", "一些", "一点", "这么",
+    "因为", "所以", "但是", "然后", "如果", "就是", "还是", "或者",
+    "知道", "觉得", "想要", "应该", "可以", "可能", "需要",
+    "今天", "明天", "昨天", "时候", "问题", "东西",
+})
+
+
+def _query_tokens(text: str) -> frozenset[str]:
+    """Extract distinctive tokens: ASCII words + non-stop CJK bigrams."""
+    toks: set[str] = set()
+    for word in re.findall(r"[A-Za-z][A-Za-z0-9_]*", text):
+        if len(word) >= 2:
+            toks.add(word.lower())
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        for i in range(len(run) - 1):
+            bigram = run[i:i + 2]
+            if bigram not in _CN_STOP_BIGRAMS:
+                toks.add(bigram)
+    return frozenset(toks)
+
+
+def _token_overlap(query: str, content: str) -> bool:
+    """True when query and content share at least one distinctive token."""
+    q_tokens = _query_tokens(query)
+    if not q_tokens:
+        return False
+    return bool(q_tokens & _query_tokens(content))
 
 
 @dataclass(frozen=True)
@@ -80,32 +135,25 @@ class CapabilityRegistry:
         """Return ``(can_answer, confidence)`` for a query.
 
         Confidence ranges from 0 (no knowledge) to 1 (highly confident).
+
+        Relevance comes from the top semantic hit's cosine score, corroborated
+        by query↔content token overlap.  Uncorroborated hits are damped so
+        gap detection fires on coincidental matches (KNOWN-ISSUES #1).
         """
         if not query or not query.strip():
             return False, 0.0
 
-        # 1. Determine which branch the query likely belongs to
-        try:
-            tree_info = self._tree.classify(query)
-            branch = tree_info.get("branch", "mem")
-        except Exception:
-            branch = "mem"
+        top, sem = self._retriever.best_semantic_match(query, limit=_CAN_ANSWER_TOP_K)
 
-        # 2. Search for related entries
-        results = self._retriever.retrieve(query, limit=5)
-        if hasattr(results, "entries"):
-            entries = results.entries
-
-        if not entries:
+        if top is None or sem <= 0.0:
             return False, 0.0
 
-        # 3. Score from result count, weights, and freshness
-        weights = [getattr(e, "weight", 0.5) for e in entries]
-        avg_weight = sum(weights) / len(weights) if weights else 0.5
-        count_bonus = min(len(entries) / 5.0, 1.0)
+        if sem >= _SEM_STRONG:
+            return True, round(sem, 3)
+        if sem >= _SEM_CORROBORATED and _token_overlap(query, top.content):
+            return True, round(sem, 3)
 
-        confidence = avg_weight * count_bonus
-        return confidence >= 0.2, round(confidence, 3)
+        return False, round(sem * _UNCORROBORATED_DAMP, 3)
 
     def get_confidence(self, branch: str) -> float:
         """Overall health of a capability domain (0-1)."""

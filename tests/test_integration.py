@@ -1013,6 +1013,48 @@ class TestCapabilityGap:
         gap = detector.detect("Kubernetes Ingress 怎么配置？")
         assert gap is None or gap.severity == "minor"
 
+    def test_can_answer_false_on_unrelated_content(self, gap_skill: MemorySkill) -> None:
+        """Symptom test (KNOWN-ISSUES #1): unrelated query must NOT be answerable.
+
+        Pre-fix, a store populated with Docker content answered the totally
+        unrelated "量子场论重整化群" with can=True conf≈0.5 because confidence
+        measured result count, not relevance.
+        """
+        from memory_skill.capability_registry import CapabilityRegistry
+        gap_skill.ingest(DialogueTurn(
+            id="cap_docker", role="user",
+            content="Docker 部署用 docker build、docker run 和 docker compose", timestamp=utcnow(),
+        ))
+        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        can, conf = reg.can_answer("量子场论重整化群 是什么？")
+        assert can is False, f"Unrelated query answered: can={can} conf={conf}"
+
+    def test_gap_detected_on_unrelated(self, gap_skill: MemorySkill) -> None:
+        """Unrelated query on a populated store must produce a knowledge gap."""
+        from memory_skill.capability_registry import CapabilityRegistry
+        from memory_skill.gap_detector import GapDetector
+        gap_skill.ingest(DialogueTurn(
+            id="cap_docker2", role="user",
+            content="Docker 部署用 docker build、docker run 和 docker compose", timestamp=utcnow(),
+        ))
+        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        detector = GapDetector(reg, min_confidence=0.5)
+        gap = detector.detect("ThermalFlux 引擎的 ZetaResonance 配置？")
+        assert gap is not None, "Unrelated query must be detected as a knowledge gap"
+
+    def test_semantic_score_exposed(self, gap_skill: MemorySkill) -> None:
+        """LearnedStore.search must expose per-entry semantic score in [0, 1]."""
+        gap_skill.ingest(DialogueTurn(
+            id="cap_sem", role="user",
+            content="Python 用 asyncio 做异步编程", timestamp=utcnow(),
+        ))
+        entries = gap_skill._learned_store.search("Python 怎么做异步", limit=5)
+        assert entries, "expected at least one entry"
+        assert all(
+            e.semantic_score is not None and 0.0 <= e.semantic_score <= 1.0
+            for e in entries
+        ), "semantic_score must be attached in [0, 1]"
+
     def test_is_question_heuristic(self) -> None:
         from memory_skill.ingestor import _looks_like_question
         assert _looks_like_question("怎么用 Python？")

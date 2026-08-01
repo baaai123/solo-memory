@@ -258,6 +258,34 @@ class Retriever:
             timestamp=now,
         )
 
+    def best_semantic_match(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> tuple[MemoryEntry | None, float]:
+        """Return the entry with the highest semantic score for the query.
+
+        Answerability checks use the semantic leg directly because RRF-fused
+        ordering is recency-biased — the most relevant entry is often not the
+        first envelope entry (KNOWN-ISSUES #1).
+
+        Returns
+        -------
+        ``(entry, semantic_score)`` — ``(None, 0.0)`` when nothing matched.
+        """
+        if not query:
+            return None, 0.0
+
+        entries: list[MemoryEntry] = self._learned_store.search(
+            query,
+            limit=limit,
+        )
+        if not entries:
+            return None, 0.0
+
+        best = max(entries, key=lambda e: (e.semantic_score or 0.0, len(e.content)))
+        return best, best.semantic_score or 0.0
+
     # ── Temporal scoring ──────────────────────────────────────────────────
 
     def _time_decay(self, entry: MemoryEntry, now: datetime) -> float:

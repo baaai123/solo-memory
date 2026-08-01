@@ -494,7 +494,13 @@ class LearnedStore:
         self,
         results: dict[str, Any],
     ) -> list[MemoryEntry]:
-        """Convert ChromaDB query results into ``MemoryEntry`` objects."""
+        """Convert ChromaDB query results into ``MemoryEntry`` objects.
+
+        Attaches ``semantic_score`` (cosine similarity to the query, derived
+        from the ChromaDB cosine distance) so downstream consumers such as
+        ``CapabilityRegistry.can_answer`` can judge genuine relevance instead
+        of raw result counts.
+        """
         entries: list[MemoryEntry] = []
 
         ids_list = results.get("ids")
@@ -503,11 +509,20 @@ class LearnedStore:
 
         documents = results.get("documents")
         metadatas = results.get("metadatas")
+        distances = results.get("distances")
 
         for i, eid in enumerate(ids_list[0]):
             doc = documents[0][i] if documents and documents[0] else None
             meta = metadatas[0][i] if metadatas and metadatas[0] else {}
-            entries.append(self._chroma_meta_to_entry(eid, doc, meta))
+
+            semantic_score: float | None = None
+            if distances and distances[0]:
+                # ChromaDB cosine distance ∈ [0, 2]; similarity = 1 - distance.
+                semantic_score = round(max(0.0, 1.0 - float(distances[0][i])), 4)
+
+            entries.append(
+                self._chroma_meta_to_entry(eid, doc, meta, semantic_score)
+            )
 
         return entries
 
@@ -530,6 +545,7 @@ class LearnedStore:
         entry_id: str,
         document: str | None,
         meta: dict[str, Any],
+        semantic_score: float | None = None,
     ) -> MemoryEntry:
         """Reconstruct a ``MemoryEntry`` from ChromaDB metadata."""
         # Late import to avoid circular dependency at module level
@@ -563,4 +579,5 @@ class LearnedStore:
             category=str(meta.get("category", "default")),
             tags=_safe_json_load(meta.get("tags_json"), []),
             metadata=ext_meta,
+            semantic_score=semantic_score,
         )

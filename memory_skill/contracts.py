@@ -33,6 +33,10 @@ class MemoryEntry:
         metadata: Extensible key-value store for arbitrary metadata.
         is_system: When True, this entry cannot be modified by the agent.
             Evolution and consolidation set this for their outputs.
+        semantic_score: Cosine similarity (0.0–1.0) of this entry to the query
+            that produced it, or ``None`` when not computed (e.g. entries
+            matched only via the BM25 leg).  Used by ``CapabilityRegistry``
+            to judge answerability — see KNOWN-ISSUES #1.
     """
     id: str
     content: str
@@ -43,6 +47,7 @@ class MemoryEntry:
     tags: list[str]
     metadata: dict[str, Any]
     is_system: bool = False
+    semantic_score: float | None = None
 
 
 @dataclass(frozen=True)
