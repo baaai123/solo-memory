@@ -120,6 +120,10 @@ def ingest_pers(ms, trait: str) -> object:
     if cards:
         current = max(cards, key=lambda e: len(e.content)).content
         if f"- {trait}" not in current:
+            # Semantic dedup: skip if a near-identical card already exists
+            dup = ms.learned_store.find_duplicate(ms.embedder.embed(current), threshold=0.85)
+            if dup:
+                return None
             idx = current.find("## 规则")
             if idx > 0:
                 updated = current[:idx].rstrip() + f"\n- {trait}\n\n" + current[idx:]
