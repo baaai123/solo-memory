@@ -16,6 +16,7 @@ import pytest
 
 from memory_skill import DialogueTurn, MemorySkill, MemorySkillConfig
 from memory_skill.contracts import utcnow
+from tests.fakes import build_fast_system
 
 # ── API defaults ─────────────────────────────────────────────────────────────
 # API keys are read from environment only — never commit real keys.
@@ -144,3 +145,13 @@ def skill(tmp_db: str) -> Iterator[MemorySkill]:
     sk = MemorySkill(config)
     yield sk
     sk._conn.close()
+
+
+@pytest.fixture(scope="module")
+def fast_skill():
+    """MemorySystem composed from in-memory fakes — no real infra.
+
+    Fast path for tests that don't exercise ONNX/chroma/LLM specifics.
+    """
+    from tests.fakes import build_fast_system
+    return build_fast_system()
