@@ -241,7 +241,7 @@ class MemorySkillAdapter(MemoryProtocol):
             # Boost weights for cited memories
             for mid in self._last_retrieval["mem_ids"][:3]:
                 try:
-                        self._skill.boost_weight(mid)
+                    self._skill.boost_weight(mid)
                 except Exception:
                     pass
             logger.debug("Feedback: %s for %d mems", outcome,

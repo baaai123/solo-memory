@@ -193,6 +193,8 @@ def weave(
         ctx.pers_context = _build_pers_context(stores.retriever)
         ctx.gap_context = _build_gap_context(stores.gaps)
         ctx.title_preview = _build_title_preview(stores.retriever)
+        ctx.tree_context = _build_tree_context(stores.tree, user_message)
+        ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
         return ctx
 
     # deep
@@ -206,6 +208,8 @@ def weave(
     ctx.pref_context = _build_pref_context(stores.retriever)
     ctx.pers_context = _build_pers_context(stores.retriever)
     ctx.gap_context = _build_gap_context(stores.gaps)
+    ctx.tree_context = _build_tree_context(stores.tree, user_message)
+    ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
     if _has_high_weight(stores.learned_store):
         ctx.needs_second_pass = True
     return ctx

@@ -276,10 +276,11 @@ class FakeTreeClassifier:
                 return {"root": root, "branch": branch}
         return {"root": "user", "branch": "mem"}
 
-    def navigate(self, query: str, max_tokens: int = 512) -> list[dict] | None:
+    def navigate(self, query: str, max_tokens: int = 512) -> str:
         if not query:
-            return None
-        return [{"branch": "user_mem", "days": 3}]
+            return ""
+        # Mirror real TreeManager.navigate: returns formatted context string
+        return f"[树导航] 检索分支: user_mem (3天) — {query[:30]}..."
 
 
 class FakeKnowledgeSynth:

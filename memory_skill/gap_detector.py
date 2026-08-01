@@ -35,18 +35,6 @@ class Gap:
     decision: object | None = None   # LearningDecider.Decision if evaluated
 
 
-def _is_question(content: str) -> bool:
-    """Heuristic: does *content* look like a question?
-    """
-    stripped = content.strip()
-    return (
-        "?" in stripped
-        or stripped.endswith("吗")
-        or stripped.endswith("呢")
-        or any(kw in stripped for kw in ("什么", "怎么", "如何", "哪", "谁", "多少", "在哪"))
-    )
-
-
 class GapDetector:
     """Detects knowledge gaps in user queries.
 
