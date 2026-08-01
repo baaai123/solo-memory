@@ -78,7 +78,7 @@ above — re-calibrate if the embedder changes.
 
 ## 2. OpenCode plugin loading is unreliable — auto-ingest falls back to protocol
 
-**Status**: Workaround in place · **Severity**: Medium · **Found**: 2026-08-01
+**Status**: Resolved · **Severity**: Medium · **Found**: 2026-08-01 · **Fixed**: 2026-08-02
 
 ### Impact
 `opencode-auto-memory` plugin (event-hook auto-ingest of assistant
@@ -103,6 +103,70 @@ conversation is lost.
 Publish the plugin to npm (`opencode-solo-memory`) so OpenCode installs
 it natively, or debug OpenCode's local-plugin loading (path-with-spaces /
 ESM import). Low priority while the protocol workaround holds.
+
+### Hook-layer hard enforcement — feasible (researched 2026-08-02)
+The protocol workaround is unreliable because it depends on the agent
+*choosing* to call `memory_weave` every turn (live failure: whole rounds
+skipped it). A framework-level hard constraint is achievable — verified
+against the local `@opencode-ai/plugin` types and the working
+`@code-yeongyu/comment-checker` plugin (oh-my-openagent):
+
+- **Verified working — tool-chain injection**: `tool.execute.before` /
+  `tool.execute.after` hooks receive `{tool, sessionID, callID}` and can
+  rewrite the tool's `args`/`output`. comment-checker uses exactly this to
+  force a response to every flagged comment (live in this session). A
+  memory-enforcement hook reuses the pattern: on `tool.execute.before`,
+  read `client.session.messages({path:{id:sessionID}})` for the latest user
+  message, check whether `memory_weave` was called since it arrived, and if
+  not, inject "YOU MUST CALL memory_weave (user_message, assistant_content)
+  BEFORE any other tool" via the output. This is a *hard* constraint —
+  framework-injected at tool-call time, not prompt advice the agent can
+  ignore.
+- **Unverified — transparent injection (experimental API)**: 
+  `experimental.chat.messages.transform` (rewrite the message array before
+  the LLM call) and `experimental.chat.system.transform` (rewrite system
+  prompt) could make memory context arrive *without* the agent calling
+  weave at all — MISSION's "transparent to the agent" goal. `chat.message`
+  part-pushing was ruled out (EventV2 branded ids); these transform hooks
+  operate on the existing message array and may bypass that restriction.
+  **Not tested on this opencode build — verify before relying on it**
+  (experimental API, may change).
+
+### Implementation (2026-08-02, chosen path A — tool-chain enforcement)
+`opencode-auto-memory/index.js` now registers a `tool.execute.after` hook:
+- Fetches `client.session.messages()`, finds the latest user message,
+  checks whether a `memory_weave` tool call exists after it.
+- If not (and the executed tool isn't itself `memory_weave`, and the tool
+  didn't fail), appends the ENFORCEMENT_WARNING to the tool result.
+- Warns at most once per user turn (per-session `warnedBySession` map).
+- Offline-verified 7/7 scenarios (warn / no-warn / self / dedup / reset /
+  failure-skip). Deployed to `~/.config/opencode/plugins/solo-memory.js`.
+- The `experimental.*` transform route (path B) was deliberately not used:
+  experimental API may break on the next opencode update.
+
+### Live verification — two real bugs found & fixed (2026-08-02)
+Live verify (intentional violation: run a tool without calling memory_weave)
+initially showed the hook never fired. Debug instrumentation (console.log +
+`/tmp/solo-memory-debug.log` — console.log IS captured into opencode's log,
+proven by Systematic's "initialized" line) traced two real defects, both in
+opencode's plugin contract vs. this plugin's code:
+
+1. **Export format — plugin was never loaded**. opencode's loader (verified
+   by reverse-engineering the compiled binary) reads `q.default` and requires
+   file/path plugins to `export id` (`rQ`/`tQ` in the loader source). The
+   original `export const plugin = ...` + `export { x as server }` was silently
+   ignored. Fixed to `export const id = "solo-memory"; export default { id,
+   server: opencodeAutoMemory }` — matching oh-my-openagent's proven shape
+   (`return { id, server }` + `export { x as default }`).
+2. **SDK response shape — hook fired but silently bailed**. `client.session.messages()`
+   returns `{ data: [...] }` (SDK client wrapper), not a bare array; the code's
+   `if (!msgs || !msgs.length) return;` saw `msgs.length === undefined` and
+   always exited. Fixed with comment-checker's `normalizeSDKResponse` pattern:
+   `const msgs = Array.isArray(resp) ? resp : (resp?.data ?? [])`.
+
+Final live verify PASSED (2026-08-02 01:46): a deliberate no-weave tool call
+returned `[MEMORY PROTOCOL ENFORCEMENT — ACTION REQUIRED]` in the tool result;
+debug log shows `msgs: 128 → lastUser → ENFORCEMENT_WARNING appended`. #2 closed.
 
 ---
 

@@ -6,6 +6,11 @@ Part of the [solo-memory](https://github.com/baaai123/solo-memory) project. This
 
 - `event` hook → **auto-stores** user+assistant pairs after each reply (fully automatic, no side effects)
 - `chat.message` hook → captures pending user text for pairing (does **not** modify the message)
+- `tool.execute.after` hook → **hard-enforces** the per-turn `memory_weave` protocol (KNOWN-ISSUES #2):
+  when the agent executes a tool without calling `memory_weave` for the current user message,
+  a mandatory warning is appended to the tool result ("ACTION REQUIRED — call memory_weave now").
+  Same mechanism as oh-my-openagent's comment-checker: framework-injected at tool-call time,
+  not prompt advice the agent can skip. Warns at most once per user turn.
 
 **Memory injection** is done the clean way — through the memory protocol, not message mutation:
 opencode's `prompt_append` tells the agent to call `memory_weave` (MCP tool) before responding.
