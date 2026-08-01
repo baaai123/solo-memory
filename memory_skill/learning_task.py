@@ -43,9 +43,17 @@ _ANTI_BOT_MARKERS = (
 
 
 def _is_anti_bot_or_error(text: str) -> bool:
-    """True if *text* looks like an anti-bot challenge or error page."""
+    """True if *text* looks like an anti-bot challenge, error page, or empty content."""
     t = (text or "").lower()
-    return any(marker in t for marker in _ANTI_BOT_MARKERS)
+    if any(marker in t for marker in _ANTI_BOT_MARKERS):
+        return True
+    # Near-empty pages (navigation-only, no real content) are not learnable
+    stripped = (text or "").strip()
+    if len(stripped) < 30:
+        return True
+    if len(stripped) < 80 and any(kw in t for kw in ("page not found", "no content", "empty")):
+        return True
+    return False
 
 
 @dataclass
