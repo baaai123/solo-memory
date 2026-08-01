@@ -161,6 +161,22 @@ class Retriever:
             self._turn_to_entry(t) for t in dialogue_turns
         ]
 
+        # Apply category filter to BM25 entries too. filters only reach the
+        # semantic (ChromaDB) leg; dialogue turns are tagged "dialogue" and
+        # would otherwise leak into pref/pers/skill results regardless of
+        # the requested category.
+        if filters and filters.get("category"):
+            wanted = filters["category"]
+            if wanted == "default":
+                bm25_entries = [
+                    e for e in bm25_entries
+                    if e.category == "dialogue" or e.category == "default"
+                ]
+            else:
+                bm25_entries = [
+                    e for e in bm25_entries if e.category == wanted
+                ]
+
         # ── 3. Build candidate set (union, dedup by id) ───────────────────
         now = utcnow()
         candidates: dict[str, MemoryEntry] = OrderedDict()
