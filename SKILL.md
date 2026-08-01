@@ -20,18 +20,36 @@ past decisions, learned skills, and ongoing tasks — across sessions.
 
 ## Usage Protocol
 
+### MANDATORY per-turn loop (no exceptions)
+
+Every exchange follows this exact order — this is the ONLY way both sides
+of the conversation get persisted:
+
 ```
-BEFORE responding:
-  opencode-memory_memory_weave(user_message)  → inject 8-block context
+1. USER message arrives
+2. CALL memory_weave(
+     user_message=<current user message>,
+     assistant_content=<YOUR PREVIOUS reply, verbatim>   ← MUST pass
+   )
+   → auto-ingests user + your last reply, returns 8-block context
+3. Respond to the user using the woven context
+4. Your reply becomes assistant_content for the NEXT turn's memory_weave
+```
 
-AFTER important decisions, bugs, findings:
-  opencode-memory_memory_ingest(role, content) → persist for future
+Skipping `assistant_content` means your replies are never stored — half
+the conversation is lost. memory_weave auto-ingests both fields.
 
+### Supplemental tools
+
+```
 WHEN you need more than weave provides:
-  opencode-memory_memory_search(query)         → deep retrieval
+  memory_search(query)  → deep retrieval
+
+AFTER standalone facts/decisions (not part of a user→assistant exchange):
+  memory_ingest(role, content)
 
 SESSION START:
-  opencode-memory_memory_status                 → health check
+  memory_status  → health check
 ```
 
 ## Weave Context (what you receive)
