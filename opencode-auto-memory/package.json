@@ -1,8 +1,10 @@
 {
-  "name": "opencode-auto-memory",
+  "name": "opencode-solo-memory",
   "version": "0.1.0",
-  "description": "Auto weave/ingest for memory-skill — no agent discipline required",
+  "description": "Auto weave/ingest for solo-memory — transparent long-term memory for OpenCode. No agent discipline required.",
   "type": "module",
   "main": "./index.js",
+  "files": ["index.js", "bridge.py", "README.md"],
+  "keywords": ["opencode", "plugin", "memory", "mcp", "long-term-memory"],
   "license": "Apache-2.0"
 }

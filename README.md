@@ -231,6 +231,16 @@ export OPENAI_API_BASE=http://127.0.0.1:8888/v1
 }
 ```
 
+### 方式 4：自动记忆插件（推荐，agent 零感知）
+
+```json
+{
+  "plugin": ["/abs/path/to/solo-memory/opencode-auto-memory"]
+}
+```
+
+`chat.message` 自动注入记忆、`event` 自动存储——agent 不需要记得调任何工具。详见 `opencode-auto-memory/README.md`。
+
 详见 [docs/INTEGRATION.md](docs/INTEGRATION.md)。
 
 ### 方式 3：Python API

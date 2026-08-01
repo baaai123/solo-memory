@@ -1,20 +1,51 @@
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Resolve: venv python + project db. Override via env.
+// Project root = parent of this plugin dir (opencode-auto-memory/../)
 const PROJECT = process.env.MEMORY_SKILL_PROJECT
-  || "/home/pc/projects/memory/memory for solo";
+  || path.dirname(__dirname);
 const DB = process.env.MEMORY_SKILL_DB_PATH
   || path.join(PROJECT, "opencode_memory.db");
+const VENV = path.join(PROJECT, "venv");
 const PY = process.env.MEMORY_SKILL_PYTHON
-  || path.join(PROJECT, "venv", "bin", "python");
+  || path.join(VENV, "bin", "python");
 const BRIDGE = path.join(__dirname, "bridge.py");
+const REQUIREMENTS = path.join(PROJECT, "requirements.txt");
+
+let setupInProgress = false;
+let setupDone = false;
+
+// First-run bootstrap: create venv + install deps if missing
+function ensureSetup() {
+  if (setupDone) return true;
+  if (!fs.existsSync(PY)) {
+    if (setupInProgress) return false;
+    setupInProgress = true;
+    try {
+      console.error("[solo-memory] First run: creating venv + installing deps…");
+      execSync(`python3 -m venv "${VENV}"`, { cwd: PROJECT });
+      execSync(`"${PY}" -m pip install -q -r "${REQUIREMENTS}"`, { cwd: PROJECT });
+      setupInProgress = false;
+      setupDone = true;
+      console.error("[solo-memory] Setup complete.");
+      return true;
+    } catch (e) {
+      setupInProgress = false;
+      console.error("[solo-memory] Setup failed:", e.message);
+      return false;
+    }
+  }
+  setupDone = true;
+  return true;
+}
 
 function runBridge(args, input = "") {
   return new Promise((resolve) => {
+    if (!ensureSetup()) { resolve(null); return; }
     const child = execFile(
       PY, [BRIDGE, ...args, DB],
       { timeout: 30000 },
