@@ -42,6 +42,15 @@ if TYPE_CHECKING:
 _embedder_cache: dict[str, Embedder] = {}
 
 
+def clear_cache() -> None:
+    """Clear the module-level embedder cache.
+
+    Call between tests to force a fresh Embedder instance (avoids
+    cross-test state leakage from the singleton cache).
+    """
+    _embedder_cache.clear()
+
+
 class Embedder:
     """Generate text embeddings via ONNX Runtime with a deterministic fallback.
 

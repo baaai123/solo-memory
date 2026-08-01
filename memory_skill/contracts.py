@@ -169,11 +169,6 @@ class MemorySkillConfig:
     rrf_bm25_weight: float = 2.5        # V8: BM25 boosted for Chinese ver batim content
     rrf_temporal_weight: float = 0.5
 
-    # ── Scoring weights ──────────────────────────────────────────────────
-    # Main signals (approximate sum = 1.0):
-    weight_semantic: float = 0.6
-    weight_bm25: float = 0.4
-
     # ── Storage ───────────────────────────────────────────────────────────
     db_path: str = "memory.db"
     max_learned_entries: int = 100_000
