@@ -85,7 +85,7 @@ def _ingest_structured(ms, title: str, content: str, category: str,
     if ms.tree and category not in ("pref", "pers"):
         try:
             from memory_skill.tree_classifier import classify_skill_path
-            path = classify_skill_path("", "", "", title, content, "")
+            path = classify_skill_path(title)
             if path:
                 ms.tree.add_skill_node(path)
         except Exception:

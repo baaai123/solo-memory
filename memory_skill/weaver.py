@@ -381,18 +381,6 @@ def _build_emotion_context(
         return f"[你当前对{partner}的感受] 好感度偏低——与{partner}的互动常有不快。语气可以冷淡或回避。"
 
 
-def _build_observation_section(memory: MemorySource, user_message: str) -> str:
-    try:
-        obs = memory.search(
-            "", limit=5, filters={"category": "observation"})
-    except Exception as e:
-        _logger.debug("Observation section failed: %s", e)
-        return ""
-    lines = [f"- {e.content[:_TIER2_MAX_CHARS // 3]}"
-             for e in obs if e.weight >= 0.3]
-    return "\n".join(lines) if lines else ""
-
-
 def _build_nudge(memory: MemorySource) -> str:
     """Build nudge with behavioral intensity based on weight.
 

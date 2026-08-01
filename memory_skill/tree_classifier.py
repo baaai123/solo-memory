@@ -124,15 +124,8 @@ def _fallback_classify() -> dict:
     return {"root": "user", "branch": "mem"}
 
 
-_SKILL_PATH_PROMPT = """\
-Existing: {existing_tree}
-New skill: {title}
-Assign this skill to a path in the tree. Output ONLY a JSON path list. Start new branch if no fit."""
-
-
-def classify_skill_path(api_base: str, api_key: str, model: str,
-                        title: str, content: str,
-                        existing_tree: str) -> list[str]:
+def classify_skill_path(title: str) -> list[str]:
+    """Derive a tree path from a skill title (first words as hierarchy)."""
     parts = title.strip().split()
     if not parts:
         return []

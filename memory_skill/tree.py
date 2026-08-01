@@ -273,9 +273,9 @@ class TreeManager:
                 vals = "?, ?, 'assistant', ?, ?"
                 params: list = [node_id, parent_id, name, 2 + i]
                 if is_leaf and entry_id:
-                    cols += ", memory_ref"
-                    vals += ", ?"
-                    params.append(entry_id)
+                    cols += ", memory_ref, weight"
+                    vals += ", ?, ?"
+                    params += [entry_id, weight]
                 self._conn.execute(
                     f"INSERT INTO tree_nodes ({cols}) VALUES ({vals})",
                     params,
