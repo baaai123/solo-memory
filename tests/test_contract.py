@@ -77,6 +77,13 @@ class TestDialogueStoreContract:
         results = store.search("python", limit=5)
         assert any(t.id == "t1" for t in results)
 
+    def test_search_multiword_partial_match(self, store):
+        """OR semantics: a multi-word query surfaces documents matching any word."""
+        store.insert(_make_turn("t1", "python backend framework"))
+        store.insert(_make_turn("t2", "frontend javascript"))
+        results = store.search("python backend ORM", limit=5)
+        assert any(t.id == "t1" for t in results)
+
 
 # ── LearnedStore contracts ────────────────────────────────────────────────
 

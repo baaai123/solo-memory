@@ -53,6 +53,44 @@ def _cn_tokenize(text: str) -> str:
         result = text
     return result
 
+
+# Function/pronoun words that carry no topical signal — dropping them keeps
+# OR-queries from flooding the result set with stopword-only matches.
+_CN_STOP_WORDS = frozenset({
+    "的", "了", "是", "在", "和", "与", "及", "或", "有", "为", "之",
+    "我", "你", "他", "她", "它", "这", "那", "就", "都", "也", "很",
+    "要", "会", "能", "吗", "呢", "吧", "啊", "着", "过", "不", "没", "别", "请",
+    "怎么", "什么", "如何", "为何", "为什么", "哪些", "哪个", "多少", "多久",
+    "是不是", "有没有", "可不可以", "能否", "是否",
+    "可以", "应该", "需要", "知道", "觉得", "想要",
+    "因为", "所以", "但是", "然后", "如果", "就是", "还是", "或者",
+    "这个", "那个", "一个", "一种", "一下", "一些", "一点", "这么",
+    "我们", "你们", "他们", "大家", "自己", "本人",
+    "现在", "今天", "明天", "昨天", "时候", "之后", "之前",
+})
+
+
+def _bm25_match_expr(query: str) -> str | None:
+    """Build an FTS5 MATCH expression for *partial* multi-token matching.
+
+    FTS5 default-ANDs bare tokens, so a natural-language query tokenized
+    into N words only matches documents containing ALL N — long queries
+    always return nothing.  OR-joining the tokens lets partial matches
+    surface; BM25 ``rank`` up-ranks multi-token matches, so the most
+    relevant documents still come first.
+
+    Returns ``None`` when no distinctive token remains.
+    """
+    tokens = [t for t in _cn_tokenize(query).split() if t.lower() not in _CN_STOP_WORDS]
+    if not tokens:
+        return None
+    # Quote every token so FTS5 operators/syntax inside jieba output are
+    # treated as literal text, not match syntax.
+    quoted = ['"' + t.replace('"', '""') + '"' for t in tokens]
+    if len(quoted) == 1:
+        return quoted[0]
+    return " OR ".join(quoted)
+
 if TYPE_CHECKING:
     from memory_skill.contracts import MemorySkillConfig
 
@@ -185,11 +223,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS dialogue_fts USING fts5(
 
     def search(self, query: str, limit: int = 10) -> list[DialogueTurn]:
         """Full-text search via FTS5 with BM25 ranking.
-        For Chinese, unicode61 tokenizer splits each character; use raw query
-        without phrase quoting so FTS5 AND-matches individual characters.
+
+        Partial matching: tokens are OR-joined so multi-word queries match
+        documents containing *some* of the terms; BM25 rank up-ranks
+        documents matching more terms (see ``_bm25_match_expr``).
         """
-        # Tokenize Chinese query with jieba so FTS5 can match word tokens
-        safe = _cn_tokenize(query)
+        match_expr = _bm25_match_expr(query)
+        if match_expr is None:
+            return []
         rows = self._conn.execute(
             "SELECT dt.id, dt.role, dt.content, dt.timestamp, dt.saw_index "
             "FROM dialogue_fts "
@@ -197,7 +238,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS dialogue_fts USING fts5(
             "WHERE dialogue_fts MATCH ? "
             "ORDER BY rank "
             "LIMIT ?",
-            (safe, limit),
+            (match_expr, limit),
         ).fetchall()
         return [_row_to_turn(r) for r in rows]
 

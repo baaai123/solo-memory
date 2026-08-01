@@ -100,13 +100,14 @@ class InMemoryDialogueStore:
         return sum(1 for t in self._turns.values() if t.timestamp.timestamp() >= cutoff)
 
     def search(self, query: str, limit: int = 10) -> list[DialogueTurn]:
+        # Mirror real DialogueStore OR semantics: any word match surfaces,
+        # not just documents containing ALL query words.
         words = [w for w in query.split() if len(w) > 1]
         if not words:
             return []
-        ids: set[str] | None = None
+        ids: set[str] = set()
         for w in words:
-            hits = self._fts.get(w, set())
-            ids = hits if ids is None else (ids & hits)
+            ids |= self._fts.get(w, set())
         if not ids:
             return []
         turns = [self._turns[i] for i in ids if i in self._turns]
@@ -196,7 +197,22 @@ class FakeLearnedStore:
                 sim = 0.5 if query in e.content else 0.0
             scored.append((sim, e))
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [e for _, e in scored[:limit]]
+        # Mirror real LearnedStore: attach the cosine as semantic_score.
+        return [
+            MemoryEntry(
+                id=e.id,
+                content=e.content,
+                created_at=e.created_at,
+                updated_at=e.updated_at,
+                weight=e.weight,
+                category=e.category,
+                tags=list(e.tags or []),
+                metadata=dict(e.metadata or {}),
+                is_system=e.is_system,
+                semantic_score=round(max(0.0, sim), 4),
+            )
+            for sim, e in scored[:limit]
+        ]
 
     def get_weight(self, entry_id: str) -> float | None:
         e = self._entries.get(entry_id)
