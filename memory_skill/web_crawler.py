@@ -153,10 +153,6 @@ class WebCrawler:
         return body.decode(errors="replace"), ct
 
     @staticmethod
-    def _detect_encoding(headers, body: bytes) -> str:
-        return "utf-8"
-
-    @staticmethod
     def _is_text(content_type: str) -> bool:
         return content_type.lower() in _TEXT_CONTENT_TYPES
 

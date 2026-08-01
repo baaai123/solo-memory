@@ -62,14 +62,13 @@ def auto_detect_outcome(
     str
         One of ``"positive"``, ``"negative"``, or ``"neutral"``.
     """
-    return _rule_detect_outcome(query, search_results, final_response)
+    return _rule_detect_outcome(search_results, final_response)
 
 
 # ── Rule path ─────────────────────────────────────────────────────────────────
 
 
 def _rule_detect_outcome(
-    query: str,
     search_results: list[dict[str, Any]],
     final_response: str,
 ) -> str:
