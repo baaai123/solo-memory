@@ -18,7 +18,9 @@ from memory_skill import DialogueTurn, MemorySkill, MemorySkillConfig
 from memory_skill.contracts import utcnow
 
 # ── API defaults ─────────────────────────────────────────────────────────────
-_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-REPLACED-BY-SECURITY-SCAN")
+# API keys are read from environment only — never commit real keys.
+# LLM-dependent tests skip when DEEPSEEK_API_KEY is unset.
+_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 _API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
 _MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 

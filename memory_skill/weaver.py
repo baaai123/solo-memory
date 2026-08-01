@@ -538,7 +538,14 @@ def _build_gap_context(stores) -> str:
     lines = ["[知识缺口]"]
     for g in recent:
         severity_mark = {"critical": "🔴", "major": "🟡", "minor": "⚪"}.get(g.severity, "")
-        lines.append(f"{severity_mark} {g.query}")
+        action = g.decision.action if g.decision else None
+        if action == "learn":
+            marker = f"{severity_mark} 📚"
+        elif action == "ask":
+            marker = f"{severity_mark} ❓"
+        else:
+            marker = severity_mark
+        lines.append(f"{marker} {g.query}")
     return "\n".join(lines)
 
 

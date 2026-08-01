@@ -329,6 +329,16 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     if tree:
         reg = CapabilityRegistry(tree, retriever)
         gap_detector = GapDetector(reg, db_path=config.db_path)
+        try:
+            from memory_skill.learning_decider import LearningDecider
+            decider = LearningDecider(
+                api_base=os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1"),
+                api_key=os.getenv("IMPORTANCE_API_KEY", ""),
+                model=os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash"),
+            )
+            gap_detector.set_decider(decider)
+        except Exception as exc:
+            logger.warning("LearningDecider unavailable: %s", exc)
 
     ingestor = Ingestor(
         config=config,

@@ -70,7 +70,7 @@ def generate_answer(skill, question: str) -> str:
     )
 
     api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
-    api_key = os.getenv("DEEPSEEK_API_KEY", "sk-REPLACED-BY-SECURITY-SCAN")
+    api_key = os.getenv("DEEPSEEK_API_KEY", "")
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     raw = call_llm(api_base, api_key, model, prompt, max_tokens=200, temperature=0.0)
@@ -88,7 +88,7 @@ def main():
     args = parser.parse_args()
 
     # Setup
-    os.environ.setdefault("DEEPSEEK_API_KEY", "sk-REPLACED-BY-SECURITY-SCAN")
+    os.environ.setdefault("DEEPSEEK_API_KEY", "")
     os.environ.setdefault("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
     os.environ.setdefault("DEEPSEEK_MODEL", "deepseek-v4-flash")
     os.environ.setdefault("IMPORTANCE_API_KEY", os.environ["DEEPSEEK_API_KEY"])

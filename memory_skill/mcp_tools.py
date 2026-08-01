@@ -501,6 +501,7 @@ class ToolHandler:
                     "branch": g.branch,
                     "severity": g.severity,
                     "confidence": g.confidence,
+                    "decision": g.decision.action if g.decision else None,
                 }
                 for g in gaps[-20:]
             ],

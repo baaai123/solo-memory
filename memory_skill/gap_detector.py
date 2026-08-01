@@ -32,6 +32,7 @@ class Gap:
     confidence: float           # 0.0 = completely unknown
     severity: str               # "critical" | "major" | "minor"
     detected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    decision: object | None = None   # LearningDecider.Decision if evaluated
 
 
 def _is_question(content: str) -> bool:
@@ -107,10 +108,34 @@ class GapDetector:
             confidence=confidence,
             severity=severity,
         )
+
+        decider = getattr(self, "_decider", None)
+        if decider is not None:
+            try:
+                decision = decider.evaluate(
+                    query=gap.query,
+                    branch=gap.branch,
+                    severity=gap.severity,
+                    history_count=len(self._gaps),
+                )
+                gap = Gap(
+                    query=gap.query,
+                    branch=gap.branch,
+                    confidence=gap.confidence,
+                    severity=gap.severity,
+                    detected_at=gap.detected_at,
+                    decision=decision,
+                )
+            except Exception as exc:
+                logger.warning("Gap decision failed: %s", exc)
+
         self._gaps.append(gap)
         if self._store is not None:
             self._store.save(gap)
-        logger.info("Gap detected [%s]: %s (conf=%.2f)", severity, query[:60], confidence)
+        if gap.decision is not None:
+            logger.info("Gap detected [%s/%s]: %s (conf=%.2f)", severity, gap.decision.action, query[:40], confidence)
+        else:
+            logger.info("Gap detected [%s]: %s (conf=%.2f)", severity, query[:60], confidence)
         return gap
 
     def detect_many(self, queries: list[str]) -> list[Gap]:

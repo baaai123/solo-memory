@@ -102,9 +102,9 @@ _INGEST_TURNS = [
 
 @pytest.fixture(scope="module")
 def api_config() -> dict[str, str]:
-    """Return API config from env (or defaults) for DeepSeek."""
+    """Return API config from env for DeepSeek (no default key)."""
     return {
-        "api_key": os.getenv("DEEPSEEK_API_KEY", "sk-REPLACED-BY-SECURITY-SCAN"),
+        "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
         "api_base": os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1"),
         "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
     }
