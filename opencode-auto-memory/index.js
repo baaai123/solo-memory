@@ -91,9 +91,9 @@ export const opencodeAutoMemory = async ({ client }) => {
       try {
         const type = event?.type || "";
         const props = event?.properties || {};
-        if (type === "message.updated" && props.message?.role === "assistant") {
-          const reply = props.message.parts
-            ? props.message.parts.filter((p) => p.type === "text").map((p) => p.text || "").join("\n")
+        if (type === "message.updated" && props.info?.role === "assistant") {
+          const reply = props.info.parts
+            ? props.info.parts.filter((p) => p.type === "text").map((p) => p.text || "").join("\n")
             : "";
           if (reply && pendingUser) {
             await runBridge(["ingest_pair"], JSON.stringify({ user: pendingUser, assistant: reply }));
