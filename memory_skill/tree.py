@@ -568,14 +568,21 @@ class TreeManager:
                 "SELECT COUNT(*) FROM tree_nodes WHERE id LIKE ? || '_%' AND level = 4",
                 (branch_id,),
             ).fetchone()[0]
-            # Count date nodes (distinct dates)
-            date_count = self._conn.execute(
-                "SELECT COUNT(*) FROM tree_nodes WHERE parent_id = ? AND level = 2",
-                (branch_id,),
-            ).fetchone()[0]
-            lines.append(
-                f"  {branch['label']}: {mem_count} 条记忆, {date_count} 个日期"
-            )
+            # Skill branch uses skill/sub-skill hierarchy, not date layers.
+            if branch_id == "assistant_skill":
+                skill_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM tree_nodes WHERE parent_id = ? AND level = 2",
+                    (branch_id,),
+                ).fetchone()[0]
+                lines.append(f"  {branch['label']}: {skill_count} 个技能")
+            else:
+                date_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM tree_nodes WHERE parent_id = ? AND level = 2",
+                    (branch_id,),
+                ).fetchone()[0]
+                lines.append(
+                    f"  {branch['label']}: {mem_count} 条记忆, {date_count} 个日期"
+                )
         return "\n".join(lines)
 
     # ── LLM-navigated tree context ─────────────────────────────────────────
