@@ -282,6 +282,51 @@ class FakeTreeClassifier:
         return [{"branch": "user_mem", "days": 3}]
 
 
+class FakeKnowledgeSynth:
+    """Deterministic knowledge synthesis — no LLM, no network.
+
+    Wraps crawled chunks into a plain markdown document so the learning
+    loop (crawl → synthesize → ingest → verify) runs fully offline.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def synthesize_markdown(self, topic: str,
+                            chunks_by_url: dict[str, list]) -> str:
+        self.call_count += 1
+        if not chunks_by_url:
+            return ""
+        blocks = []
+        for i, (url, chunks) in enumerate(chunks_by_url.items()):
+            combined = "\n\n".join(c.text[:200] for c in chunks)
+            blocks.append(f"[Source {i} — {url}]\n{combined}")
+        return f"# {topic}\n\n" + "\n\n---\n\n".join(blocks)
+
+
+class FakeCrawler:
+    """Deterministic crawler — returns fixed chunks, no network."""
+
+    def __init__(self, text: str = "crawled content about {topic}") -> None:
+        self._text = text
+        self.call_count = 0
+
+    def crawl(self, url: str) -> list:
+        from datetime import UTC, datetime
+        from memory_skill.web_crawler import CrawledChunk
+        self.call_count += 1
+        topic = url.split("/")[-1] or "topic"
+        return [
+            CrawledChunk(
+                source_url=url,
+                text=self._text.format(topic=topic),
+                index=0,
+                title=topic,
+                crawled_at=datetime.now(UTC),
+            )
+        ]
+
+
 def build_fast_system(config=None):
     """Compose a MemorySystem entirely from in-memory fakes.
 

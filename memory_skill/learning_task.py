@@ -59,10 +59,12 @@ class LearningTaskManager:
         crawler: WebCrawler,
         registry: CapabilityRegistry,
         skill,  # MemorySkill
+        synth=None,  # KnowledgeSynth (injected for tests)
     ):
         self._crawler = crawler
         self._registry = registry
         self._skill = skill
+        self._synth = synth
 
     def run(self, task: LearningTask) -> LearningTask:
         """Run the full closed-loop learning cycle.
@@ -100,11 +102,13 @@ class LearningTaskManager:
 
             # 2. Synthesize markdown from crawled content
             try:
-                from memory_skill.knowledge_synth import KnowledgeSynth
-                api_base = os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1")
-                api_key = os.getenv("IMPORTANCE_API_KEY", "")
-                model = os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash")
-                synth = KnowledgeSynth(api_base, api_key, model)
+                synth = self._synth
+                if synth is None:
+                    from memory_skill.knowledge_synth import KnowledgeSynth
+                    api_base = os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1")
+                    api_key = os.getenv("IMPORTANCE_API_KEY", "")
+                    model = os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash")
+                    synth = KnowledgeSynth(api_base, api_key, model)
                 markdown = synth.synthesize_markdown(task.topic, chunks_by_url)
             except Exception:
                 markdown = ""
