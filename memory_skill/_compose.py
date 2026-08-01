@@ -328,7 +328,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     gap_detector = None
     if tree:
         reg = CapabilityRegistry(tree, retriever)
-        gap_detector = GapDetector(reg)
+        gap_detector = GapDetector(reg, db_path=config.db_path)
 
     ingestor = Ingestor(
         config=config,

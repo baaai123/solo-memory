@@ -61,10 +61,19 @@ class GapDetector:
         self,
         registry: CapabilityRegistry,
         min_confidence: float = 0.5,
+        db_path: str | None = None,
     ):
         self._registry = registry
         self._min = min_confidence
         self._gaps: list[Gap] = []
+        self._store = None
+        if db_path:
+            try:
+                from memory_skill.gap_store import GapStore
+                self._store = GapStore(db_path)
+                self._gaps = self._store.load()
+            except Exception as exc:
+                logger.warning("Gap persistence unavailable: %s", exc)
 
     @property
     def gaps(self) -> list[Gap]:
@@ -99,6 +108,8 @@ class GapDetector:
             severity=severity,
         )
         self._gaps.append(gap)
+        if self._store is not None:
+            self._store.save(gap)
         logger.info("Gap detected [%s]: %s (conf=%.2f)", severity, query[:60], confidence)
         return gap
 
