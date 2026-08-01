@@ -83,12 +83,19 @@ def _ingest_structured(ms, title: str, content: str, category: str,
     if source_urls:
         extra["source_urls"] = source_urls
     result = ms.ingestor.ingest_dialogue(turn, category=category, extra_metadata=extra)
-    if ms.tree and category not in ("pref", "pers"):
+    if ms.tree:
         try:
-            from memory_skill.tree_classifier import classify_skill_path
-            path = classify_skill_path(title)
-            if path:
-                ms.tree.add_skill_node(path)
+            if category == "skill":
+                from memory_skill.tree_classifier import classify_skill_path
+                path = classify_skill_path(title)
+                if path:
+                    ms.tree.add_skill_node(path)
+            else:
+                branch_short = {"pref": "pref", "pers": "pers", "mission": "task"}.get(category)
+                if branch_short:
+                    root = "user" if category == "pref" else "assistant"
+                    ms.tree.add_node(content=content, memory_id=turn.id,
+                                     root=root, branch=branch_short, timestamp=now)
         except Exception:
             pass
     return result
