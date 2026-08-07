@@ -298,7 +298,7 @@ venv doc is #2). Acceptable — relevance now dominates the ordering.
 
 ## 9. 记忆存储"过程"而非"知识"——大量对话残片、结论未结构化
 
-**Status**: Partially resolved · **Severity**: Medium · **Found**: 2026-08-07 · **Fixed (dedup)**: 2026-08-07
+**Status**: Partially resolved · **Severity**: Medium · **Found**: 2026-08-07 · **Fixed (dedup + cleanup)**: 2026-08-07
 
 ### Impact
 4 天会话后 learned_store 从 551 → 863 条（+312），但检索发现绝大多数是
@@ -324,16 +324,27 @@ venv doc is #2). Acceptable — relevance now dominates the ordering.
 跳过 `ingest_pair`，消除同一轮被存两次的重复。`_weave` 的自动 ingest 截断到 800 字符
 同时减少了过程残片的冗余长度。
 
+### Fix (cleanup implemented 2026-08-07)
+`scripts/cleanup_fragments.py` 启发式重权（零 LLM 成本，软操作不删除）：
+- **碎片降权**：`dialogue:mcp_*` 中 <40 字符的闲聊残片（279 条，如"今天中午吃什么"）
+  → weight 0.5 → 0.3 + `metadata.fragment=True`——仍可检索但排最后
+- **结论提权**：≥200 字符且含结论关键词（结论/原因/决定/修复/验证/依赖…）的
+  120 条 → weight 0.5 → 0.6 + `metadata.knowledge=True`——排最前
+- 幂等可重跑；`--apply` 才写库（默认 dry-run）
+- 分类归档到 pref/pers/skill/mission 由 `scripts/reclassify_memories.py`（LLM）
+  完成，独立于本脚本
+
 ### Remaining (结论沉淀/分类, 未实现)
 1. **结论沉淀**：在关键决策点（装了/跳过了/为什么）显式 `memory_ingest` 一条干净的结论条目
-2. **分类**：按 SKILL.md 承诺的 user_mem/pref/skill/mission 类型归档，而非全堆 default
-3. **历史残片清理**：既有 `dialogue:mcp_*` 残片低权重或定期清理
+   ——已通过 SKILL.md Search-First Discipline 与 prompt_append 引导（见 #11/#10）
+2. **历史残片清理**：既有 `dialogue:mcp_*` 残片已降权（fragment=True），
+   定期清理可调用 `cleanup_fragments.py` 幂等执行
 
 ---
 
 ## 10. 记忆跨会话连续性有效，但推理链未保留
 
-**Status**: Open · **Severity**: Low · **Found**: 2026-08-07
+**Status**: Resolved (documented) · **Severity**: Low · **Found**: 2026-08-07 · **Fixed**: 2026-08-07
 
 ### Impact
 记忆模块最有价值的一次使用：用户问"之前怎么解决的"时，memory_search
@@ -350,16 +361,17 @@ venv doc is #2). Acceptable — relevance now dominates the ordering.
 ### Root cause
 记忆只存"当时发生了什么/说了什么"，不存"为什么这是对的"（依据、验证方法）。
 
-### Fix 方向
-结论条目应附带**依据/验证方法**（如"由用户锚点'界面最后=卡西安娜=文件第1行'验证"），
-使未来会话能直接复用完整推理而不需重新验证。
+### Fix (implemented 2026-08-07 — behavior-layer, documented)
+SKILL.md 新增 **Preserve the Reasoning Chain** 段落 + `prompt_append` 注入
+REASONING CHAIN 规则：结论条目必须附带依据/验证方法（"由用户锚点 X 验证"），
+附 GOOD/BAD 示例。这是行为引导——未来会话能否复用完整推理取决于 agent 是否遵守。
 
 
 ---
 
 ## 11. Memory module usage pattern in a marathon session (2026-08-01 ~ 08-07) — passive-inject rich, active-use nil
 
-**Status**: Open · **Severity**: Medium · **Found**: 2026-08-07
+**Status**: Resolved (documented) · **Severity**: Medium · **Found**: 2026-08-07 · **Fixed**: 2026-08-07
 
 ### Impact
 A ~6-day, 100+ turn session (LL mod research → TuLED modpack triage → ENB swap → mod migration →
@@ -398,3 +410,9 @@ All tools were rejected until the user hand-edited the prefix (and `p.tool.inclu
   in the weave output when the current topic matches an existing memory branch.
 - Whitelist check should use `tool.includes("memory_weave")` (not prefix equality) to avoid the
   self-deadlock class of bug.
+
+### Fix (implemented 2026-08-07 — behavior-layer, documented)
+SKILL.md 新增 **Search-First Discipline** 段落 + `prompt_append` 注入 SEARCH-FIRST 规则：
+信息缺口 → 先 `memory_search`（"以前研究过吗？"）再重爬/重算；新子主题前检索旧工作；
+关键决策显式 `memory_ingest`。附失败案例（/tmp 被清后重爬 302 页）作为反面教材。
+这是行为引导——agent 是否主动用检索取决于其遵守程度。

@@ -52,18 +52,20 @@ SESSION START:
   memory_status  → health check
 ```
 
-## Weave Context (what you receive)
+## Search-First Discipline (KNOWN-ISSUES #11)
 
-```
-[人格设定]         # Agent 人物卡 (pers)
-[用户偏好]         # key-value preferences (pref)
-[当前场景]         # scene_summary
-[最近对话]         # last 3 turns
-[检索记忆]         # RRF-semantic recall from past
-[已掌握的技能]     # skill titles only
-[当前任务]         # mission steps with skill status
-[知识缺口]         # things to learn
-```
+`memory_weave` is passive context; it is NOT a substitute for retrieval.
+When you hit an information gap, SEARCH FIRST before re-doing work:
+
+- **Before re-crawling/re-computing anything** ("has this been researched
+  before?"), call `memory_search` — a marathon session re-crawled 302
+  pages after `/tmp` was wiped because the agent never searched its own
+  memory first (hours wasted).
+- **Before starting a new sub-topic**, search for related past work.
+- **Actively `memory_ingest` key decisions** (e.g. "TuLED and elderroll
+  share D:\game\SkyrimSE") — do not rely only on auto-ingest.
+- A session with 100+ turns and ~2 `memory_search` calls is the failure
+  mode this section exists to prevent.
 
 ## When to Ingest vs Skip
 
@@ -78,6 +80,36 @@ SESSION START:
 - Greetings, small talk
 - Pure command execution without new knowledge
 - Error messages (ingest the fix, not the error)
+
+## Preserve the Reasoning Chain (KNOWN-ISSUES #10)
+
+Memory stores *what* happened, not *why it was right*. When ingesting a
+conclusion, attach its basis so a future session can reuse the reasoning
+instead of re-deriving it:
+
+```
+# GOOD — conclusion + basis:
+"MO2 界面顺序 = 文件顺序镜像(由用户锚点'界面最后=卡西安娜=文件第1行'验证)"
+# BAD — bare conclusion:
+"MO2 界面顺序 = 文件顺序镜像"
+```
+
+If the conclusion came from a user-provided anchor, a test, or a verified
+log — name that source in the ingested content. Bare conclusions without
+their basis force every future session to re-validate from scratch.
+
+## Weave Context (what you receive)
+
+```
+[人格设定]         # Agent 人物卡 (pers)
+[用户偏好]         # key-value preferences (pref)
+[当前场景]         # scene_summary
+[最近对话]         # last 3 turns
+[检索记忆]         # RRF-semantic recall from past
+[已掌握的技能]     # skill titles only
+[当前任务]         # mission steps with skill status
+[知识缺口]         # things to learn
+```
 
 ## Architecture (transparent to Agent)
 
