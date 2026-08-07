@@ -371,7 +371,7 @@ REASONING CHAIN 规则：结论条目必须附带依据/验证方法（"由用�
 
 ## 11. Memory module usage pattern in a marathon session (2026-08-01 ~ 08-07) — passive-inject rich, active-use nil
 
-**Status**: Resolved (documented) · **Severity**: Medium · **Found**: 2026-08-07 · **Fixed**: 2026-08-07
+**Status**: Resolved (implemented) · **Severity**: Medium · **Found**: 2026-08-07 · **Fixed**: 2026-08-07
 
 ### Impact
 A ~6-day, 100+ turn session (LL mod research → TuLED modpack triage → ENB swap → mod migration →
@@ -411,8 +411,17 @@ All tools were rejected until the user hand-edited the prefix (and `p.tool.inclu
 - Whitelist check should use `tool.includes("memory_weave")` (not prefix equality) to avoid the
   self-deadlock class of bug.
 
-### Fix (implemented 2026-08-07 — behavior-layer, documented)
-SKILL.md 新增 **Search-First Discipline** 段落 + `prompt_append` 注入 SEARCH-FIRST 规则：
-信息缺口 → 先 `memory_search`（"以前研究过吗？"）再重爬/重算；新子主题前检索旧工作；
-关键决策显式 `memory_ingest`。附失败案例（/tmp 被清后重爬 302 页）作为反面教材。
-这是行为引导——agent 是否主动用检索取决于其遵守程度。
+### Fix (implemented 2026-08-07 — weave 内嵌"历史相关"提示,不注入内容)
+纯文档提示已证明无效（agent 走"上下文够用"路径，从不主动 search）。
+最终方案：**weaver 新增 `[历史相关]` 提示区块**（`_build_historic_hint`）——
+- 用 user_message 检索，命中 **semantic ≥ 0.72 AND query↔content 显著 token 重叠**
+  （复用 #1 校准的双证逻辑，防中文短句语义分失真误报）
+- 过滤最近 10 分钟条目（当前轮次自身刚 ingest 的碎片不提示）
+- **不注入内容**，只给触发器：`[历史相关] 你在 08-04 处理过「TuLED 迁移」——需要当时的细节吗?用 memory_search 主动检索`
+- 关键设计：自动注入的检索结果 = 噪声（agent 无需求）；提示让 agent 产生真实
+  信息需求后**主动** search，结果才被认真对待。这是"主动检索"而非"被动注入"。
+
+真实库验证：TuLED 迁移/界面顺序锚点/动作冲突 均精准命中；"今天天气怎么样"
+无提示（误报消除）。48 单测全绿。
+
+### Fix direction (原记录, 部分已实现)

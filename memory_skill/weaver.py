@@ -94,6 +94,7 @@ class WeaveContext:
     pers_context: str = ""
     gap_context: str = ""
     title_preview: str = ""
+    historic_hint: str = ""
     needs_second_pass: bool = False
 
     def to_prompt_block(self) -> str:
@@ -121,6 +122,8 @@ class WeaveContext:
             parts.append(self.gap_context)
         if self.title_preview:
             parts.append(self.title_preview)
+        if self.historic_hint:
+            parts.append(self.historic_hint)
         if self.tree_context:
             parts.append(self.tree_context)
         if self.tree_nav:
@@ -185,6 +188,7 @@ def weave(
         if user_message:
             ctx.tier2_context = _build_tier2(
                 stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
+            ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
         ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
         ctx.memory_nudge = _build_nudge(stores.learned_store)
         ctx.skill_context = _build_skill_context(stores.retriever, user_message)
@@ -201,6 +205,7 @@ def weave(
     if user_message:
         ctx.tier2_context = _build_tier2(
             stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
+        ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
     ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
     ctx.memory_nudge = _build_nudge(stores.learned_store)
     ctx.skill_context = _build_skill_context(stores.retriever, user_message)
@@ -597,3 +602,61 @@ def _build_title_preview(retriever: RetrievalSource) -> str:
         content = title if title else e.content[:50].replace("\n", " ")
         lines.append(f"  · {content}")
     return "\n".join(lines)
+
+
+# Semantically-strong match threshold for the historic hint — same
+# corroboration constant as KNOWN-ISSUES #1 (`_SEM_CORROBORATED`).
+_HISTORIC_HINT_SEM_THRESHOLD: float = 0.72
+
+# Entries ingested in the last N minutes are this session's own turns —
+# hinting at them would tell the agent "you just said that". Skip them.
+_HISTORIC_HINT_RECENT_SKIP_MINUTES: int = 10
+
+# Cap hint content — a trigger, not a dump.
+_HISTORIC_HINT_MAX_TITLE: int = 40
+
+
+def _build_historic_hint(retriever: RetrievalSource, user_message: str) -> str:
+    """Detect a strongly-related past memory and hint the agent to
+    actively `memory_search` it — WITHOUT injecting its content.
+
+    Passive weave context is noise when the agent has no need for it;
+    a hint that *named* past work (title + date) creates a genuine
+    information need, so the agent's own memory_search result is
+    treated as relevant rather than ignored.
+
+    Relevance requires BOTH a strong semantic score AND a shared
+    distinctive token — same double-corroboration as KNOWN-ISSUES #1.
+    Pure semantic thresholds misfire on short Chinese sentences (bge
+    inflates cosine for token-sparse queries), so a bare 0.72 cosine
+    would hint at unrelated recent turns ("今天天气怎么样" → "重启了").
+    """
+    if not user_message:
+        return ""
+    try:
+        result = retriever.retrieve(user_message, limit=6)
+    except Exception as e:
+        _logger.debug("Historic hint retrieval failed: %s", e)
+        return ""
+    if not result.entries:
+        return ""
+
+    from memory_skill.capability_registry import _token_overlap
+
+    now = datetime.now()
+    for e in result.entries:
+        if not e.semantic_score or e.semantic_score < _HISTORIC_HINT_SEM_THRESHOLD:
+            continue
+        if e.created_at and (now - e.created_at.replace(tzinfo=None)).total_seconds() < (
+            _HISTORIC_HINT_RECENT_SKIP_MINUTES * 60
+        ):
+            continue
+        if not _token_overlap(user_message, e.content):
+            continue
+        title = e.content.split("\n")[0].lstrip("# ")[:_HISTORIC_HINT_MAX_TITLE]
+        date = e.created_at.strftime("%m-%d") if e.created_at else "过去"
+        return (
+            f"[历史相关] 你在 {date} 处理过「{title}」——"
+            "需要当时的细节/结论吗?用 memory_search 主动检索"
+        )
+    return ""
