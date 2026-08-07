@@ -235,6 +235,32 @@ TOOLS: list[dict[str, Any]] = [
 # ToolHandler
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# KNOWN-ISSUES #8: full-length assistant_content (e.g. a whole summary block)
+# makes the auto-ingest embedding slow enough to trip MCP -32001 timeouts.
+# Cap what gets embedded at ingest time; retrieval/weave still sees the
+# full query where it matters.
+#
+# Head+tail retention: Chinese replies often put the conclusion at the END,
+# so naive head-only truncation would drop it (KNOWN-ISSUES #9 "结论散落").
+# Keep the first `_HEAD` chars + last `_TAIL` chars, ellipsis in between.
+_MAX_AUTO_INGEST_CHARS: int = 800
+_AUTO_INGEST_HEAD: int = 490
+_AUTO_INGEST_TAIL: int = 300
+_AUTO_INGEST_ELLIPSIS: str = "\n…[中段省略]…\n"
+
+
+def _clip_auto_ingest(content: str) -> str:
+    """Head+tail truncation for auto-ingest: preserve opening context and
+    closing conclusion, drop the middle — embedding only sees ≤512 tokens
+    anyway (bge-large-en-v1.5), so retrieval quality is unaffected."""
+    if len(content) <= _MAX_AUTO_INGEST_CHARS:
+        return content
+    head = content[:_AUTO_INGEST_HEAD]
+    tail = content[-_AUTO_INGEST_TAIL:]
+    if len(head) + len(_AUTO_INGEST_ELLIPSIS) + len(tail) <= _MAX_AUTO_INGEST_CHARS:
+        return head + _AUTO_INGEST_ELLIPSIS + tail
+    return head + tail
+
 
 class ToolHandler:
     """Handles MCP tool invocations against a MemorySkill instance.
@@ -311,11 +337,11 @@ class ToolHandler:
         """
         # ── Auto-ingest user message ────────────────────────────────────
         if user_message and user_message.strip():
-            self._ingest(content=user_message, role="user")
+            self._ingest(content=_clip_auto_ingest(user_message), role="user")
 
         # ── Auto-ingest previous assistant response ─────────────────────
         if assistant_content and assistant_content.strip():
-            self._ingest(content=assistant_content, role="assistant")
+            self._ingest(content=_clip_auto_ingest(assistant_content), role="assistant")
 
         ctx = self._skill.weave(
             user_message=user_message,

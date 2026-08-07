@@ -75,6 +75,40 @@ let pendingUser = "";
 // triggers at most one enforcement warning (avoids spamming on repeat tools).
 const warnedBySession = new Map();
 
+// Parallel tool calls land in the message stream non-deterministically; if a
+// non-memory tool fires `before` while weave is still executing, don't reject.
+const weaveInFlight = new Map(); // sessionID -> boolean
+
+// KNOWN-ISSUES #8: hard-blocking EVERY tool call before weave in high-frequency
+// sessions is a net burden (timeouts + overhead). Downgrade: block at most ONCE
+// per user turn (the first non-memory tool after a user message); subsequent
+// tools in the same turn pass — the after-hook warning still nudges the agent.
+const hardBlockedBySession = new Map(); // sessionID -> lastUserId (hard-blocked)
+
+// memory_* tools must always pass, or enforcement deadlocks on itself.
+const MEMORY_TOOL_PREFIX = "opencode-memory_";
+
+// True if the latest user message has a memory_weave call after it.
+async function hasWeavedAfterLastUser(client, sessionID) {
+  const resp = await client.session.messages({ path: { id: sessionID } });
+  const msgs = Array.isArray(resp) ? resp : (resp?.data ?? []);
+  if (!msgs || !msgs.length) return { weaved: true, lastUserId: null };
+
+  let lastUserIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].info?.role === "user") { lastUserIdx = i; break; }
+  }
+  if (lastUserIdx < 0) return { weaved: true, lastUserId: null };
+
+  const lastUserId = msgs[lastUserIdx].info.id;
+  for (let i = lastUserIdx + 1; i < msgs.length; i++) {
+    for (const p of msgs[i].parts || []) {
+      if (p.type === "tool" && p.tool.includes("memory_weave")) return { weaved: true, lastUserId };
+    }
+  }
+  return { weaved: false, lastUserId };
+}
+
 // Enforcement message appended to a tool result when the agent acted before
 // calling memory_weave for the current user turn.
 const ENFORCEMENT_WARNING =
@@ -103,35 +137,48 @@ export const opencodeAutoMemory = async ({ client }) => {
     // comment-checker: on tool.execute.after, if the latest user message has
     // no memory_weave call after it, append a mandatory warning to the tool
     // result — the agent reads it before its next step and cannot ignore it.
+    "tool.execute.before": async (input, _output) => {
+      try {
+        if (input.tool.startsWith(MEMORY_TOOL_PREFIX)) {
+          if (input.tool === "memory_weave") weaveInFlight.set(input.sessionID, true);
+          return;
+        }
+        if (weaveInFlight.get(input.sessionID)) return;
+        const { weaved, lastUserId } = await hasWeavedAfterLastUser(client, input.sessionID);
+        if (weaved || !lastUserId) return;
+        if (hardBlockedBySession.get(input.sessionID) === lastUserId) return; // once per turn
+        hardBlockedBySession.set(input.sessionID, lastUserId);
+        dbg(`HARD BLOCK "${input.tool}" before memory_weave (once per turn)`);
+        throw new Error(
+          "[MEMORY PROTOCOL ENFORCEMENT — HARD BLOCK]\n" +
+          "Tool execution rejected: memory_weave has not been called for the current user message.\n" +
+          "Every turn MUST start with:\n" +
+          "  memory_weave(user_message=<current user message>, assistant_content=<your previous reply, verbatim>)\n" +
+          "Call memory_weave NOW, then retry this tool."
+        );
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("[MEMORY PROTOCOL ENFORCEMENT")) throw err;
+        dbg(`before hook error: ${err?.message || err}`);
+      }
+    },
+
     "tool.execute.after": async (input, output) => {
       try {
-        if (input.tool === "memory_weave") return; // doing the right thing
+        if (input.tool.startsWith(MEMORY_TOOL_PREFIX)) {
+          if (input.tool === "memory_weave") weaveInFlight.set(input.sessionID, false);
+          return;
+        }
         if (String(output.output || "").slice(0, 200).match(/error:|failed to|could not/i)) return;
+        if (weaveInFlight.get(input.sessionID)) return;
 
-        const resp = await client.session.messages({ path: { id: input.sessionID } });
-        const msgs = Array.isArray(resp) ? resp : (resp?.data ?? []);
-        if (!msgs || !msgs.length) return;
+        const { weaved, lastUserId } = await hasWeavedAfterLastUser(client, input.sessionID);
+        if (weaved || !lastUserId) return;
+        if (warnedBySession.get(input.sessionID) === lastUserId) return;
 
-        let lastUserIdx = -1;
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].info?.role === "user") { lastUserIdx = i; break; }
-        }
-        if (lastUserIdx < 0) return;
-        const lastUser = msgs[lastUserIdx].info;
-        if (warnedBySession.get(input.sessionID) === lastUser.id) return;
-
-        let weaved = false;
-        for (let i = lastUserIdx + 1; i < msgs.length && !weaved; i++) {
-          for (const p of msgs[i].parts || []) {
-            if (p.type === "tool" && p.tool === "memory_weave") { weaved = true; break; }
-          }
-        }
-        if (weaved) return;
-
-        warnedBySession.set(input.sessionID, lastUser.id);
+        warnedBySession.set(input.sessionID, lastUserId);
         output.output += ENFORCEMENT_WARNING;
         dbg("ENFORCEMENT_WARNING appended");
-      } catch (err) { dbg(`hook error: ${err?.message || err}`); }
+      } catch (err) { dbg(`after hook error: ${err?.message || err}`); }
     },
 
     "chat.message": async (_input, output) => {
@@ -146,7 +193,10 @@ export const opencodeAutoMemory = async ({ client }) => {
     },
 
     event: async ({ event }) => {
-      // After an assistant reply completes, auto-ingest the pair
+      // After an assistant reply completes, auto-ingest the pair.
+      // KNOWN-ISSUES #9: if the agent already called memory_weave for this
+      // turn (weave auto-ingests both sides), skip — ingest_pair would
+      // duplicate the same exchange in learned_store.
       try {
         const type = event?.type || "";
         const props = event?.properties || {};
@@ -155,6 +205,17 @@ export const opencodeAutoMemory = async ({ client }) => {
             ? props.info.parts.filter((p) => p.type === "text").map((p) => p.text || "").join("\n")
             : "";
           if (reply && pendingUser) {
+            const sessionID = props.sessionID || props.parentID || "";
+            let weaved = false;
+            if (sessionID) {
+              try { ({ weaved } = await hasWeavedAfterLastUser(client, sessionID)); }
+              catch { weaved = false; }
+            }
+            if (weaved) {
+              pendingUser = "";
+              dbg("skip ingest_pair — weave already ingested this turn");
+              return;
+            }
             await runBridge(["ingest_pair"], JSON.stringify({ user: pendingUser, assistant: reply }));
             pendingUser = "";
           }
