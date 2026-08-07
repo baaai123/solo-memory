@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol, TYPE_CHECKING
 
 from memory_skill.contracts import (
@@ -643,11 +643,11 @@ def _build_historic_hint(retriever: RetrievalSource, user_message: str) -> str:
 
     from memory_skill.capability_registry import _token_overlap
 
-    now = datetime.now()
+    now = datetime.now(UTC)
     for e in result.entries:
         if not e.semantic_score or e.semantic_score < _HISTORIC_HINT_SEM_THRESHOLD:
             continue
-        if e.created_at and (now - e.created_at.replace(tzinfo=None)).total_seconds() < (
+        if e.created_at and (now - e.created_at).total_seconds() < (
             _HISTORIC_HINT_RECENT_SKIP_MINUTES * 60
         ):
             continue
