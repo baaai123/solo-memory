@@ -24,6 +24,14 @@ from memory_skill.contracts import (
 _logger = logging.getLogger(__name__)
 
 
+class ClassificationRequired(Exception):
+    """Raised by weave() when the previous turn has not been classified."""
+
+
+class GapRequired(Exception):
+    """Raised by weave() when classified mission has unfulfilled skill gaps."""
+
+
 @dataclass
 class MemorySystem:
     """All memory stores in one place — no hidden state."""
@@ -37,6 +45,9 @@ class MemorySystem:
     tree: object = None
     ingestor: object = None
     retriever: object = None
+    learning_queue: object = None
+    _classify_pending: str | None = None
+    _pending_gaps: set = field(default_factory=set)
     _composed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __init__(self, config: MemorySkillConfig | None = None, **overrides):
@@ -56,53 +67,14 @@ class MemorySystem:
 
     # ── Convenience methods (thin delegates, no new logic) ──────────────
 
-    def ingest_staged(self, turn) -> dict:
-        """Ingest a turn through isolated stages.
+    def ingest(self, turn, *, enrich: bool = True, report: bool = False) -> object:
+        """Persist a dialogue turn.  Pure storage — no LLM stages.
 
-        Returns per-stage status so partial success is visible:
-        ``{"stored": envelope, "title": bool, "extracted": bool, "errors": [...]}``.
-        A failure in the LLM stages (tag/extract) does not roll back the
-        committed dialogue — it is reported, not swallowed and not fatal.
+        Classification, title generation, conclusion extraction, and
+        mission decomposition are the main agent's responsibility.
+        This method only writes the turn to both stores (dialogue + learned).
         """
-        from memory_skill.memory_extract import extract_structured, tag_title
-
-        errors: list[str] = []
-
-        try:
-            stored = self.ingestor.ingest_dialogue(turn)
-        except Exception as exc:
-            return {"stored": None, "title": False, "extracted": False,
-                    "errors": [f"store: {type(exc).__name__}: {exc}"]}
-
-        title_ok = True
-        try:
-            tag_title(self, turn)
-        except Exception as exc:
-            title_ok = False
-            errors.append(f"title: {type(exc).__name__}: {exc}")
-
-        extract_ok = True
-        try:
-            extract_structured(self, turn)
-        except Exception as exc:
-            extract_ok = False
-            errors.append(f"extract: {type(exc).__name__}: {exc}")
-
-        return {"stored": stored, "title": title_ok,
-                "extracted": extract_ok, "errors": errors}
-
-    def ingest(self, turn) -> object:
-        result = self.ingestor.ingest_dialogue(turn)
-        from memory_skill.memory_extract import extract_structured, tag_title
-        try:
-            tag_title(self, turn)
-        except Exception as exc:
-            _logger.warning("Ingest tag_title stage failed: %s", exc)
-        try:
-            extract_structured(self, turn)
-        except Exception as exc:
-            _logger.warning("Ingest extract_structured stage failed: %s", exc)
-        return result
+        return self.ingestor.ingest_dialogue(turn)
 
     def retrieve(self, query: str, limit: int = 10, filters=None,
                   partner: str | None = None):
@@ -123,7 +95,10 @@ class MemorySystem:
     def weave(self, user_message: str, scene_summary: str = "",
               partner: str | None = None):
         """Assemble layered memory context (convenience wrapper)."""
+        from memory_skill.protocol_gate import ProtocolGate
         from memory_skill.weaver import WeaverStores, weave
+
+        ProtocolGate(self).check(user_message)
 
         stores = WeaverStores(
             saw_buffer=self.saw_buffer,
@@ -136,7 +111,9 @@ class MemorySystem:
             tree=self.tree,
             gaps=self.gaps,
         )
-        return weave(stores, user_message, scene_summary, partner=partner)
+        ctx = weave(stores, user_message, scene_summary, partner=partner)
+        ProtocolGate(self).after_weave(user_message)
+        return ctx
 
     def health(self) -> dict:
         self.embedder.embed("health")  # trigger lazy-load
@@ -206,8 +183,13 @@ class MemorySystem:
         return messages
 
     def auto_ingest(self, user_msg: str, assistant_msg: str) -> None:
-        """Persist both sides of a conversation turn."""
-        from memory_skill.contracts import DialogueTurn
+        """Persist both sides of a conversation turn via the ingest pipeline.
+
+        Uses ``enrich=False`` (no LLM stages) — this is the high-frequency
+        path (transparent proxy). Truncation follows the unified head+tail
+        policy (see ADR-0001).
+        """
+        from memory_skill.contracts import DialogueTurn, clip_auto_ingest
 
         now = datetime.now(UTC)
         for role, content in [("user", user_msg), ("assistant", assistant_msg)]:
@@ -217,20 +199,18 @@ class MemorySystem:
                 turn = DialogueTurn(
                     id=f"auto_{now:%Y%m%d_%H%M%S}_{hash(content) & 0xFFFF:04x}",
                     role=role,
-                    content=content[:2000],
+                    content=clip_auto_ingest(content),
                     timestamp=now,
                 )
-                self.ingestor.ingest_dialogue(turn)
+                self.ingest(turn, enrich=False)
             except Exception as exc:
                 _logger.warning("auto_ingest failed for %s: %s", role, exc)
 
     @property
     def gaps(self) -> list:
-        detector = getattr(self.ingestor, '_gap_detector', None)
-        return detector.gaps if detector else []
+        return self.ingestor.gaps
 
-
-    def ingest_skill(self, title: str, content: str, source_urls: list[str]) -> object:
+    def ingest_skill(self, title: str, content: str, source_urls: list[str] | None = None) -> object:
         from memory_skill.memory_extract import ingest_skill_ex
         return ingest_skill_ex(self, title, content, source_urls=source_urls)
 
@@ -279,48 +259,6 @@ class MemorySystem:
                 return "\n".join(lines)
         return f"[扩展记忆 — {title}]\n  · {match.content[:200]}"
 
-    def learn(self, topic: str, urls: list) -> object:
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import Gap
-        from memory_skill.learning_task import LearningTaskManager
-        from memory_skill.web_crawler import WebCrawler
-
-        registry = CapabilityRegistry(self.tree, self.retriever)
-        crawler = WebCrawler(timeout=30)
-        mgr = LearningTaskManager(crawler, registry, self)
-        task = mgr.create_from_gap(
-            Gap(query=topic, branch="assistant_skill", confidence=0.0,
-                severity="major"), urls)
-        return mgr.run(task)
-
-    @property
-    def _dialogue_store(self):
-        return self.dialogue_store
-
-    @property
-    def _learned_store(self):
-        return self.learned_store
-
-    @property
-    def _embedder(self):
-        return self.embedder
-
-    @property
-    def _tree(self):
-        return self.tree
-
-    @property
-    def _saw_buffer(self):
-        return self.saw_buffer
-
-    @property
-    def _retriever(self):
-        return self.retriever
-
-    @property
-    def _config(self):
-        return self.config
-
     def _ns_for(self, partner: str | None = None) -> str:
         return self.config.agent_name
 
@@ -336,74 +274,51 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     from memory_skill.learned_store import LearnedStore
     from memory_skill.retriever import Retriever
     from memory_skill.saw_buffer import SawRingBuffer
-    from memory_skill.tree import TreeManager
 
     embedder = Embedder(config)
     saw_buffer = SawRingBuffer(capacity=config.saw_buffer_capacity)
     dialogue_store = DialogueStore(config)
-    learned_store = LearnedStore(
-        config, embedder,
-        chroma_path=config.db_path + "_chroma",
-    )
-
-    tree = None
-    if config.tree_enabled:
-        api_base = os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1")
-        api_key = os.getenv("IMPORTANCE_API_KEY", "")
-        model = os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash")
-        tree = TreeManager(
-            db_path=config.db_path,
-            api_base=api_base,
-            api_key=api_key,
-            model=model,
-        )
-
-    retriever = Retriever(
-        config=config,
-        dialogue_store=dialogue_store,
-        learned_store=learned_store,
-    )
-
-    from memory_skill.capability_registry import CapabilityRegistry
-    from memory_skill.gap_detector import GapDetector
-    gap_detector = None
-    if tree:
-        reg = CapabilityRegistry(tree, retriever)
-        gap_detector = GapDetector(reg, db_path=config.db_path)
-        try:
-            from memory_skill.learning_decider import LearningDecider
-            decider = LearningDecider(
-                api_base=os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1"),
-                api_key=os.getenv("IMPORTANCE_API_KEY", ""),
-                model=os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash"),
-            )
-            gap_detector.set_decider(decider)
-        except Exception as exc:
-            logger.warning("LearningDecider unavailable: %s", exc)
-
-    ingestor = Ingestor(
-        config=config,
-        saw_buffer=saw_buffer,
-        dialogue_store=dialogue_store,
-        learned_store=learned_store,
-        embedder=embedder,
-        tree=tree,
-        gap_detector=gap_detector,
-    )
+    learned_store = LearnedStore(config, embedder,
+                                 chroma_path=config.db_path + "_chroma")
+    tree = _build_tree(config) if config.tree_enabled else None
+    retriever = Retriever(config=config, dialogue_store=dialogue_store,
+                          learned_store=learned_store)
+    learning_queue = _build_learning_queue(config) if config.tree_enabled else None
+    ingestor = Ingestor(config=config, saw_buffer=saw_buffer,
+                        dialogue_store=dialogue_store,
+                        learned_store=learned_store, embedder=embedder,
+                        tree=tree, learning_queue=learning_queue)
 
     ms = object.__new__(MemorySystem)
     ms.__dict__.update(
-        config=config,
-        embedder=embedder,
-        saw_buffer=saw_buffer,
-        dialogue_store=dialogue_store,
-        learned_store=learned_store,
-        tree=tree,
-        ingestor=ingestor,
-        retriever=retriever,
+        config=config, embedder=embedder, saw_buffer=saw_buffer,
+        dialogue_store=dialogue_store, learned_store=learned_store,
+        tree=tree, ingestor=ingestor, retriever=retriever,
+        learning_queue=learning_queue,
+        _classify_pending=None, _pending_gaps=set(),
         _composed_at=datetime.now(UTC),
     )
     return ms
+
+
+def _tree_creds() -> tuple[str, str, str]:
+    return (
+        os.getenv("IMPORTANCE_API_BASE", "https://api.deepseek.com/v1"),
+        os.getenv("IMPORTANCE_API_KEY", ""),
+        os.getenv("IMPORTANCE_MODEL", "deepseek-v4-flash"),
+    )
+
+
+def _build_tree(config: MemorySkillConfig):
+    from memory_skill.tree import TreeManager
+    api_base, api_key, model = _tree_creds()
+    return TreeManager(db_path=config.db_path,
+                       api_base=api_base, api_key=api_key, model=model)
+
+
+def _build_learning_queue(config: MemorySkillConfig):
+    from memory_skill.learning_queue import LearningQueue
+    return LearningQueue(db_path=config.db_path)
 
 
 create = _build_system

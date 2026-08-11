@@ -164,33 +164,33 @@ def ingest(ctx: click.Context, content: str, role: str,
     click.echo(f"ok ({n} turns total)")
 
 
-@main.command()
-@click.argument("topic")
-@click.option("--url", "-u", multiple=True, required=True,
-              help="Source URL to crawl (repeatable)")
+@main.command("teach-skill")
+@click.argument("title")
+@click.argument("content", required=False)
+@click.option("--url", "-u", multiple=True,
+              help="Source URL used for learning (repeatable)")
 @click.pass_context
-def learn(ctx: click.Context, topic: str, url: tuple[str, ...]) -> None:
-    """Closed-loop learning: crawl URLs, synthesize, ingest, verify."""
+def teach_skill(ctx: click.Context, title: str, content: str,
+                url: tuple[str, ...]) -> None:
+    """Teach a skill: title + content (or read content from stdin)."""
     skill = _get_skill(ctx.obj["db"], ctx.obj["agent"])
-    task = skill.learn(topic, list(url))
-    click.echo(f"task: {task.id}")
-    for status, detail, _ in task.status_log:
-        click.echo(f"  {status}: {detail}")
-    click.echo(f"final: {task.status}")
+    if not content:
+        content = click.get_text_stream("stdin").read().strip()
+    result = skill.ingest_skill_ex(title, content, source_urls=list(url) or None)
+    click.echo(f"stored: {result.entry_id}")
 
 
 @main.command()
 @click.pass_context
 def gaps(ctx: click.Context) -> None:
-    """Show detected knowledge gaps."""
+    """Show pending learning-queue items (skills / missions)."""
     skill = _get_skill(ctx.obj["db"], ctx.obj["agent"])
     gaps = skill.gaps
     if not gaps:
-        click.echo("(no gaps detected)")
+        click.echo("(queue empty)")
         return
     for g in gaps[-20:]:
-        decision = g.decision.action if g.decision else "—"
-        click.echo(f"[{g.severity}/{decision}] {g.query[:80]}")
+        click.echo(f"[{g.kind}/{g.status}] {g.query[:80]}")
 
 
 @main.command()

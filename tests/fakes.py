@@ -164,7 +164,7 @@ class FakeLearnedStore:
     def update(self, entry_id: str, content: str, **kwargs) -> None:
         entry = self._entries.get(entry_id)
         if entry is None:
-            return
+            raise KeyError(f"Entry '{entry_id}' not found in LearnedStore")
         new_meta = dict(entry.metadata or {})
         meta = kwargs.get("metadata")
         if isinstance(meta, dict):
@@ -245,7 +245,33 @@ class FakeLearnedStore:
     def set_title(self, entry_id: str, title: str) -> None:
         pass
 
-    def find_duplicate(self, embedding: list[float], threshold: float) -> dict | None:
+    def find_duplicate(self, embedding: list[float], threshold: float = 0.85) -> dict | None:
+        """Mirror real LearnedStore: nearest neighbor by cosine similarity.
+
+        The real store uses ``hnsw:space=cosine`` — chroma returns cosine
+        *distance* (1 - similarity), and a duplicate is a small distance
+        (high similarity), matched when ``distance <= 1 - threshold``.
+        Identical text has distance 0.0 and always matches.
+        """
+        best: tuple[float, str] | None = None
+        for entry_id, ev in self._embeddings.items():
+            if not embedding or not ev:
+                continue
+            sim = sum(a * b for a, b in zip(embedding, ev))
+            distance = 1.0 - sim
+            if best is None or distance < best[0]:
+                best = (distance, entry_id)
+        if best is None:
+            return None
+        distance, entry_id = best
+        if distance <= (1.0 - threshold):
+            entry = self._entries[entry_id]
+            return {
+                "entry_id": entry_id,
+                "content": entry.content,
+                "weight": entry.weight,
+                "distance": distance,
+            }
         return None
 
     def health(self) -> dict:
@@ -268,6 +294,71 @@ class FakeSawBuffer:
             if e.heartbeat_index >= heartbeat_index:
                 return e
         return None
+
+
+class FakeLearningQueue:
+    """In-memory learning queue — mirrors LearningQueue's public API."""
+
+    def __init__(self) -> None:
+        self._items: dict[str, object] = {}
+        self._next_id = 0
+
+    def enqueue(self, kind: str, query: str, detail: str = "") -> object | None:
+        query = (query or "").strip()
+        if not query or kind not in ("skill", "mission"):
+            return None
+        if self._has_open(kind, query):
+            return None
+        from datetime import UTC, datetime
+        from memory_skill.learning_queue import QueueItem
+        self._next_id += 1
+        item = QueueItem(
+            id=f"lq_fake_{self._next_id}", kind=kind, query=query,
+            status="open", detail=detail, created_at=datetime.now(UTC),
+        )
+        self._items[item.id] = item
+        return item
+
+    def open_items(self, kind: str | None = None) -> list:
+        items = [i for i in self._items.values()
+                 if getattr(i, "status", "") == "open"]
+        if kind:
+            items = [i for i in items if i.kind == kind]
+        return sorted(items, key=lambda i: i.created_at)
+
+    def mark(self, item_id: str, status: str) -> bool:
+        item = self._items.get(item_id)
+        if item is None or getattr(item, "status", "") != "open":
+            return False
+        if status not in ("done", "skipped"):
+            return False
+        from memory_skill.learning_queue import QueueItem
+        self._items[item_id] = QueueItem(
+            id=item.id, kind=item.kind, query=item.query,
+            status=status, detail=item.detail, created_at=item.created_at,
+        )
+        return True
+
+    def count_open(self) -> int:
+        return sum(1 for i in self._items.values()
+                   if getattr(i, "status", "") == "open")
+
+    def all(self, limit: int = 50) -> list:
+        items = sorted(self._items.values(),
+                       key=lambda i: getattr(i, "created_at", None) or 0,
+                       reverse=True)
+        return items[:limit]
+
+    def _has_open(self, kind: str, query: str) -> bool:
+        return any(
+            getattr(i, "kind", "") == kind
+            and getattr(i, "query", "") == query
+            and getattr(i, "status", "") == "open"
+            for i in self._items.values()
+        )
+
+    def close(self) -> None:
+        pass
 
 
 class FakeTreeClassifier:
@@ -377,7 +468,7 @@ def build_fast_system(config=None):
         learned_store=learned_store,
         embedder=embedder,
         tree=None,
-        gap_detector=None,
+        learning_queue=None,
     )
 
     ms = object.__new__(MemorySystem)
@@ -390,6 +481,9 @@ def build_fast_system(config=None):
         tree=None,
         ingestor=ingestor,
         retriever=retriever,
+        learning_queue=None,
+        _classify_pending=None,
+        _pending_gaps=set(),
         _composed_at=datetime.now(UTC),
     )
     return ms

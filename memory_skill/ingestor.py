@@ -21,6 +21,7 @@ Screen pipeline:
 from __future__ import annotations
 
 import re
+from memory_skill.classification_helpers import _looks_like_question, _ScreenNoiseFilter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,7 @@ from memory_skill.contracts import (
     DialogueStoreProtocol,
     DialogueTurn,
     EmbedderProtocol,
+    IngestReceipt,
     LearnedStoreProtocol,
     MemoryEntry,
     SawBufferProtocol,
@@ -69,63 +71,6 @@ _STOP_WORDS: frozenset[str] = frozenset({
     "March", "April", "June", "July", "August", "September",
     "October", "November", "December",
 })
-
-
-_QUESTION_KW = ("?", "吗", "呢", "什么", "怎么", "如何", "哪", "谁", "多少", "在哪")
-
-
-def _looks_like_question(content: str) -> bool:
-    s = content.strip()
-    return "?" in s or s.endswith(("吗", "呢")) or any(kw in s for kw in _QUESTION_KW[3:])
-
-
-class _ScreenNoiseFilter:
-    _ERROR_PATTERN = re.compile(
-        r"Error|Exception|FATAL|Traceback|TypeError|Connection refused",
-        re.IGNORECASE,
-    )
-
-    def __init__(self, threshold: float = 0.85, ngram: int = 3):
-        self._threshold = threshold
-        self._ngram = ngram
-
-    def is_error_frame(self, text: str) -> bool:
-        return bool(self._ERROR_PATTERN.search(text))
-
-    def should_keep(self, current: str, last: str) -> bool:
-        if self._ERROR_PATTERN.search(current):
-            return True
-        if current == last:
-            return False
-        if not current and last:
-            return True
-        if current and not last:
-            return True
-        if not current and not last:
-            return False
-        return self._cosine(current, last) < self._threshold
-
-    def _cosine(self, a: str, b: str) -> float:
-        na = self._ngrams(a)
-        nb = self._ngrams(b)
-        if not na or not nb:
-            return 0.0
-        vocab = sorted(set(na) | set(nb))
-        idx = {ng: i for i, ng in enumerate(vocab)}
-        va = np.zeros(len(vocab), dtype=np.float64)
-        vb = np.zeros(len(vocab), dtype=np.float64)
-        for ng in na:
-            va[idx[ng]] += 1.0
-        for ng in nb:
-            vb[idx[ng]] += 1.0
-        dot = float(np.dot(va, vb))
-        na_norm, nb_norm = float(np.linalg.norm(va)), float(np.linalg.norm(vb))
-        return dot / (na_norm * nb_norm) if na_norm and nb_norm else 0.0
-
-    def _ngrams(self, text: str) -> list[str]:
-        t = text.lower()
-        n = self._ngram
-        return [t[i:i + n] for i in range(len(t) - n + 1)] if len(t) >= n else []
 
 
 def _extract_entities(text: str) -> list[str]:
@@ -186,7 +131,7 @@ class Ingestor:
         learned_store: LearnedStoreProtocol,
         embedder: EmbedderProtocol,
         tree: TreeManagerProtocol | None = None,
-        gap_detector=None,
+        learning_queue=None,
     ) -> None:
         self._config = config
         self._saw_buffer = saw_buffer
@@ -195,7 +140,7 @@ class Ingestor:
         self._noise_filter = _ScreenNoiseFilter()
         self._embedder = embedder
         self._tree = tree
-        self._gap_detector = gap_detector
+        self._learning_queue = learning_queue
 
         # Monotonic heartbeat counter for SawRingBuffer entries
         self._heartbeat: int = 0
@@ -206,13 +151,18 @@ class Ingestor:
     # ── Public API ────────────────────────────────────────────────────────
 
     def ingest_dialogue(self, turn: DialogueTurn, category: str | None = None,
-                         extra_metadata: dict | None = None) -> None:
+                         extra_metadata: dict | None = None) -> IngestReceipt:
         """Ingest a dialogue turn — all content goes to both stores.
 
         1. Store in SawRingBuffer (always)
         2. Store in DialogueStore (always)
         3. Embed → semantic dedup → merge (weight+0.05) or insert (weight=0.5)
         4. Store in LearnedStore (always)
+
+        Returns an ``IngestReceipt`` describing what happened (see ADR-0001):
+        the stored entry id, whether it was deduped, the resulting weight,
+        and per-stage status. Gap detection is no longer triggered here —
+        the ingest pipeline (MemorySystem.ingest) drives it under ``enrich``.
         """
         now = datetime.now()
 
@@ -249,6 +199,9 @@ class Ingestor:
                 content=turn.content,
                 metadata={"weight": new_weight},
             )
+            deduped = True
+            entry_id = dup["entry_id"]
+            weight = new_weight
         else:
             # New entry with uniform weight
             entry = MemoryEntry(
@@ -262,21 +215,15 @@ class Ingestor:
                 metadata=meta,
             )
             self._learned_store.insert(entry)
+            deduped = False
+            weight = 0.5
 
-            if (
-                self._gap_detector is not None
-                and turn.role in ("user",)
-                and _looks_like_question(turn.content)
-            ):
-                try:
-                    self._gap_detector.detect(turn.content)
-                except Exception as e:
-                    _logger.warning("Gap detection failed for %s: %s", entry_id, e)
-
-        from memory_skill.contracts import MemoryEnvelope
-        return MemoryEnvelope(
-            type="ingest", entries=[], truncated=False,
-            total_candidates=0, timestamp=now,
+        return IngestReceipt(
+            entry_id=entry_id,
+            deduped=deduped,
+            weight=weight,
+            staged={},
+            timestamp=now,
         )
 
     def ingest_screen(self, frame_text: str) -> None:
@@ -324,6 +271,16 @@ class Ingestor:
             },
         )
         self._learned_store.insert(entry)
+
+    @property
+    def gaps(self) -> list:
+        """Open learning-queue items (skills/missions awaiting agent action)."""
+        if self._learning_queue is None:
+            return []
+        try:
+            return self._learning_queue.open_items()
+        except Exception:
+            return []
 
     # ── Private helpers ───────────────────────────────────────────────────
 

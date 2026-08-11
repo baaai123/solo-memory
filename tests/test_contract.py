@@ -134,3 +134,54 @@ class TestLearnedStoreContract:
             store.insert(_make_entry(f"e{i}", f"topic {i}"))
         results = store.search("topic", limit=3)
         assert len(results) <= 3
+
+
+# ── Ingest pipeline contracts (ADR-0001) ────────────────────────────────────────
+
+class TestIngestPipelineContract:
+    """Pure-storage ingest: no LLM stages, writes to both stores."""
+
+    @pytest.fixture
+    def system(self):
+        from tests.fakes import build_fast_system
+        return build_fast_system()
+
+    def test_ingest_writes_both_stores(self, system) -> None:
+        from memory_skill.contracts import IngestReceipt, DialogueTurn
+
+        turn = DialogueTurn(
+            id="t1", role="user", content="remember python backend", timestamp=_naive_now()
+        )
+        receipt = system.ingest(turn)
+        assert isinstance(receipt, IngestReceipt)
+        assert system.dialogue_store.count() == 1
+        assert system.learned_store.get_weight(receipt.entry_id) is not None
+
+    def test_ingest_receipt_has_entry_id_and_weight(self, system) -> None:
+        from memory_skill.contracts import DialogueTurn
+
+        turn = DialogueTurn(
+            id="t2", role="user", content="remember python backend", timestamp=_naive_now()
+        )
+        receipt = system.ingest(turn)
+        assert receipt.entry_id == "dialogue:t2"
+        assert receipt.deduped is False
+        assert receipt.weight == 0.5
+
+    def test_ingest_dedup_reflected_in_receipt(self, system) -> None:
+        from memory_skill.contracts import DialogueTurn
+
+        first = DialogueTurn(
+            id="t3a", role="user", content="remember python backend", timestamp=_naive_now()
+        )
+        dup = DialogueTurn(
+            id="t3b", role="user", content="remember python backend", timestamp=_naive_now()
+        )
+        system.ingest(first)
+        receipt = system.ingest(dup)
+        assert receipt.deduped is True
+        assert receipt.weight >= 0.55
+
+    def test_ingest_screen_still_routes_to_saw(self, system) -> None:
+        system.ingest_screen("screen frame text")
+        assert system.saw_buffer.get_all()

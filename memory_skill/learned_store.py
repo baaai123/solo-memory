@@ -254,15 +254,24 @@ class LearnedStore:
         """Search for a near-duplicate memory by embedding cosine distance.
 
         Finds the single nearest neighbor in the collection and returns it
-        if the cosine distance exceeds the threshold, indicating a match.
+        if the cosine distance is *below* ``1 - threshold`` (i.e. similarity
+        above ``threshold``), indicating a match.
+
+        The collection uses ``hnsw:space=cosine``, so chroma's ``distance``
+        is cosine distance (``1 - similarity``): identical text has distance
+        ``0.0``, maximally different text approaches ``1.0``.  A duplicate
+        is therefore a *small* distance — the historical ``distance >
+        threshold`` comparison inverted this and silently disabled dedup
+        (see KNOWN-ISSUES #9: thousands of duplicate fragments).
 
         Parameters
         ----------
         embedding:
             The embedding vector to compare against stored entries.
         threshold:
-            Cosine distance threshold (default 0.85).  Only results with
-            ``distance > threshold`` are considered duplicates.
+            Cosine similarity threshold (default 0.85).  Only results with
+            similarity ``>= threshold`` (distance ``<= 1 - threshold``)
+            are considered duplicates.
 
         Returns
         -------
@@ -288,7 +297,9 @@ class LearnedStore:
         meta = results["metadatas"][0][0] if results.get("metadatas") else {}
         weight = float(meta.get("weight", 0.5))
 
-        if distance > threshold:
+        # Cosine space: distance = 1 - similarity.  A duplicate is a small
+        # distance, so match when distance <= (1 - threshold).
+        if distance <= (1.0 - threshold):
             return {
                 "entry_id": entry_id,
                 "content": content,

@@ -90,23 +90,6 @@ class TestImportance:
         assert persist is False
 
 
-class TestStructuredExtractor:
-    def test_prompt_includes_examples(self):
-        from memory_skill.structured_extractor import _EXTRACT_PROMPT
-        assert "冰美式" in _EXTRACT_PROMPT
-        assert "简洁" in _EXTRACT_PROMPT
-        assert "pref" in _EXTRACT_PROMPT
-        assert "skill" in _EXTRACT_PROMPT
-        assert "mission" in _EXTRACT_PROMPT
-        assert "pers" in _EXTRACT_PROMPT
-
-    def test_prompt_formats_content(self):
-        from memory_skill.structured_extractor import _EXTRACT_PROMPT
-        prompt = _EXTRACT_PROMPT.format(content="test message")
-        assert "test message" in prompt
-        assert '"type":"none"' in prompt
-
-
 class TestNoiseFilter:
     def test_identical_frames(self):
         from memory_skill.ingestor import _ScreenNoiseFilter

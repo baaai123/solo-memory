@@ -7,6 +7,7 @@ MemorySystem interface with fake stores behind it.
 
 from __future__ import annotations
 
+import pytest
 from datetime import datetime
 
 from memory_skill.contracts import DialogueTurn, MemorySkillConfig
@@ -62,54 +63,114 @@ class TestFastWeave:
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         ms.ingest(DialogueTurn(id="t1", role="user", content="最近在学什么？", timestamp=datetime.now()))
         ctx = ms.weave(user_message="学什么", scene_summary="测试")
-        assert ctx.time_context  # time always present
+        assert ctx.time_context
+
+    def test_nudge_gated_on_message_relevance(self):
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms.ingestor.ingest_dialogue(DialogueTurn(
+            id="n1", role="system",
+            content="pip install failed: ERROR", timestamp=datetime.now(),
+        ))
+        entry = list(ms.learned_store._entries.values())[0]
+        ms.learned_store.set_weight(entry.id, 0.9)
+
+        related = ms.weave("how do I fix the pip install error", scene_summary="")
+        assert "pip install" in related.memory_nudge
+
+        ms._classify_pending = None  # simulate classification completed
+        unrelated = ms.weave("what is the weather like", scene_summary="")
+        assert unrelated.memory_nudge == ""
+
+    def test_nudge_unfiltered_when_no_user_message(self):
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms.ingestor.ingest_dialogue(DialogueTurn(
+            id="n2", role="system", content="critical deploy note",
+            timestamp=datetime.now(),
+        ))
+        entry = list(ms.learned_store._entries.values())[0]
+        ms.learned_store.set_weight(entry.id, 0.9)
+
+        ctx = ms.weave(user_message="", scene_summary="")
+        assert "critical deploy note" in ctx.memory_nudge
+
+    def test_weave_blocks_when_prev_not_classified(self):
+        from memory_skill._compose import ClassificationRequired
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms.weave("first message", scene_summary="")
+        # Now _classify_pending = "first message"
+        with pytest.raises(ClassificationRequired):
+            ms.weave("second message", scene_summary="")
+
+    def test_weave_allows_when_classified(self):
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms.weave("first", scene_summary="")
+        ms._classify_pending = None  # simulate classify()
+        ctx = ms.weave("second", scene_summary="")
+        assert ctx.time_context
 
 
 class TestFastLearning:
-    def test_learning_loop_runs_offline(self):
-        """Learning loop executes crawl→synth→ingest→verify with fakes."""
-        from datetime import datetime
-        from tests.fakes import FakeKnowledgeSynth, FakeCrawler
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import Gap
-        from memory_skill.learning_task import LearningTaskManager
+    def test_teach_skill_rejects_no_sources(self):
+        from tests.fakes import FakeLearningQueue
+        from memory_skill.skill_writer import SkillWriter
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
-        registry = CapabilityRegistry(None, ms.retriever)
-        crawler = FakeCrawler(text="FastAPI 教程内容: pip install fastapi, 创建 main.py")
-        synth = FakeKnowledgeSynth()
-        mgr = LearningTaskManager(crawler, registry, ms, synth=synth)
+        writer = SkillWriter(ms)
+        result = writer.teach_skill("Docker", "# Docker", source_urls=[])
+        assert result["status"] == "error"
+        assert "source_urls" in result["reason"]
 
-        task = mgr.create_from_gap(
-            Gap(query="FastAPI 怎么入门", branch="assistant_skill",
-                confidence=0.0, severity="major"),
-            urls=["https://example.com/fastapi"],
-        )
-        result = mgr.run(task)
-
-        # 注入生效: crawler + synth 被调用
-        assert crawler.call_count >= 1
-        assert synth.call_count >= 1
-        # 闭环阶段执行: crawling + verifying 出现在日志
-        stages = {s for s, _, _ in result.status_log}
-        assert "crawling" in stages
-        assert "verifying" in stages
-        # 记忆已 ingest (skill 条目)
-        assert ms.dialogue_store.count() >= 1
-
-    def test_learning_loop_no_sources_fails_cleanly(self):
-        """Empty sources → failed without crawling."""
-        from tests.fakes import FakeKnowledgeSynth, FakeCrawler
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import Gap
-        from memory_skill.learning_task import LearningTaskManager
+    def test_teach_skill_stores_and_marks_done(self):
+        from tests.fakes import FakeLearningQueue
+        from memory_skill.skill_writer import SkillWriter
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
-        registry = CapabilityRegistry(None, ms.retriever)
-        mgr = LearningTaskManager(FakeCrawler(), registry, ms, synth=FakeKnowledgeSynth())
-        task = mgr.create_from_gap(
-            Gap(query="topic", branch="assistant_skill", confidence=0.0, severity="minor"),
-            urls=[],
-        )
-        result = mgr.run(task)
-        assert result.status == "failed"
+        queue = FakeLearningQueue()
+        ms.learning_queue = queue
+        ms.ingestor._learning_queue = queue
+        queue.enqueue("skill", "Docker Compose", "a")
+
+        writer = SkillWriter(ms)
+        result = writer.teach_skill("Docker Compose", "# Docker Compose\n\n多容器编排",
+                                    source_urls=["https://docs.docker.com/compose/"])
+        assert result["status"] == "stored"
+        assert queue.count_open() == 0
+
+    def test_update_skill_rewrites(self):
+        from memory_skill.skill_writer import SkillWriter
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        writer = SkillWriter(ms)
+        result = writer.teach_skill("Docker", "# Docker\n\n旧",
+                                    source_urls=["https://example.com/docker"])
+        entry_id = result["entry_id"]
+
+        upd = writer.update_skill(entry_id, "# Docker\n\n新")
+        assert upd["status"] == "updated"
+        entries = ms.learned_store.search("Docker 新", limit=3)
+        assert entries and "新" in entries[0].content
+
+    def test_update_skill_missing_errors(self):
+        from memory_skill.skill_writer import SkillWriter
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        writer = SkillWriter(ms)
+        result = writer.update_skill("nope", "x")
+        assert result["status"] == "error"
+
+    def test_weave_renders_queue_directives(self):
+        from tests.fakes import FakeLearningQueue
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        queue = FakeLearningQueue()
+        ms.learning_queue = queue
+        ms.ingestor._learning_queue = queue
+        ms.ingest(DialogueTurn(id="seed", role="user", content="hello",
+                               timestamp=datetime.now()))
+        queue.enqueue("skill", "Docker Compose", "需要掌握")
+
+        ctx = ms.weave(user_message="学什么", scene_summary="")
+        block = ctx.to_prompt_block()
+        assert "先 websearch" in block
+        assert "Docker Compose" in block

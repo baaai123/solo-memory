@@ -187,10 +187,11 @@ class TestIngest:
 
     def test_ingest_all(self, skill: MemorySkill) -> None:
         """Ingest all test turns — should succeed."""
+        from memory_skill.contracts import IngestReceipt
         for turn in _INGEST_TURNS:
-            envelope = skill.ingest(turn)
-            assert isinstance(envelope, MemoryEnvelope)
-            assert envelope.type == "ingest"
+            receipt = skill.ingest(turn)
+            assert isinstance(receipt, IngestReceipt)
+            assert receipt.entry_id
 
     def test_ingest_count(self, skill: MemorySkill) -> None:
         """Dialogue store has expected turns (trivial ones filtered)."""
@@ -991,28 +992,6 @@ class TestCapabilityGap:
         can, conf = reg.can_answer("Python 怎么做异步？")
         assert can is True, f"Should answer, confidence={conf}"
 
-    def test_gap_detect_unknown(self, gap_skill: MemorySkill) -> None:
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import GapDetector
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
-        detector = GapDetector(reg, min_confidence=0.4)
-        gap = detector.detect("ThermalFlux 引擎的 ZetaResonance 配置？")
-        # Gap may be None if DB has unrelated entries with high confidence
-        if gap is not None:
-            assert gap.severity in ("critical", "major", "minor")
-
-    def test_gap_none_on_known(self, gap_skill: MemorySkill) -> None:
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import GapDetector
-        gap_skill.ingest(DialogueTurn(
-            id="cap_k8s", role="user",
-            content="Kubernetes Ingress 用 nginx-ingress controller", timestamp=utcnow(),
-        ))
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
-        detector = GapDetector(reg, min_confidence=0.3)
-        gap = detector.detect("Kubernetes Ingress 怎么配置？")
-        assert gap is None or gap.severity == "minor"
-
     def test_can_answer_false_on_unrelated_content(self, gap_skill: MemorySkill) -> None:
         """Symptom test (KNOWN-ISSUES #1): unrelated query must NOT be answerable.
 
@@ -1028,19 +1007,6 @@ class TestCapabilityGap:
         reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
         can, conf = reg.can_answer("量子场论重整化群 是什么？")
         assert can is False, f"Unrelated query answered: can={can} conf={conf}"
-
-    def test_gap_detected_on_unrelated(self, gap_skill: MemorySkill) -> None:
-        """Unrelated query on a populated store must produce a knowledge gap."""
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import GapDetector
-        gap_skill.ingest(DialogueTurn(
-            id="cap_docker2", role="user",
-            content="Docker 部署用 docker build、docker run 和 docker compose", timestamp=utcnow(),
-        ))
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
-        detector = GapDetector(reg, min_confidence=0.5)
-        gap = detector.detect("ThermalFlux 引擎的 ZetaResonance 配置？")
-        assert gap is not None, "Unrelated query must be detected as a knowledge gap"
 
     def test_semantic_score_exposed(self, gap_skill: MemorySkill) -> None:
         """LearnedStore.search must expose per-entry semantic score in [0, 1]."""
@@ -1090,62 +1056,38 @@ class TestActiveLearning:
         assert result.total_facts == 0
         assert result.overall_confidence == 0.0
 
-    def test_decider_with_critical_gap(self, api_config: dict[str, str]) -> None:
-        """Critical gap on technical topic → learn."""
-        from memory_skill.learning_decider import LearningDecider
+    def test_learning_queue_persists_across_instances(self, tmp_path) -> None:
+        """LearningQueue persists skill/mission items to SQLite."""
+        import os
+        from memory_skill.learning_queue import LearningQueue
 
-        decider = LearningDecider(api_config["api_base"], api_config["api_key"], api_config["model"])
-        decision = decider.evaluate(
-            "Kubernetes Ingress 怎么配置？", "assistant_skill", "critical", history_count=3,
-        )
-        assert decision.action in ("skip", "ask", "learn")
-        logger.info("Decision: %s (%.2f)", decision.action, decision.confidence)
+        db = os.path.join(str(tmp_path), "lq.db")
+        q1 = LearningQueue(db_path=db)
+        item = q1.enqueue("skill", "Docker Compose", "多容器部署")
+        assert item is not None
+        q1.close()
 
-    def test_decider_with_minor_gap(self, api_config: dict[str, str]) -> None:
-        """Minor gap on casual topic → skip."""
-        from memory_skill.learning_decider import LearningDecider
+        q2 = LearningQueue(db_path=db)
+        items = q2.open_items(kind="skill")
+        assert len(items) == 1
+        assert items[0].query == "Docker Compose"
+        assert items[0].detail == "多容器部署"
+        q2.close()
 
-        decider = LearningDecider(api_config["api_base"], api_config["api_key"], api_config["model"])
-        decision = decider.evaluate(
-            "今天中午吃什么？", "user_mem", "minor",
-        )
-        assert decision.action in ("skip", "ask", "learn")
-        logger.info("Decision: %s", decision.action)
+    def test_learning_queue_dedup_and_mark(self, tmp_path) -> None:
+        """Open dedup + mark done semantics."""
+        import os
+        from memory_skill.learning_queue import LearningQueue
 
-    def test_learn_task_create(self, skill: MemorySkill) -> None:
-        """LearningTask can be created and has correct initial state."""
-        from memory_skill.learning_task import LearningTask
-
-        task = LearningTask(
-            id="test_task_001",
-            topic="Python async",
-            branch="assistant_skill",
-            gap_query="Python 怎么做异步？",
-            sources=["http://httpbin.org/html"],
-        )
-        assert task.status == "pending"
-        assert not task.is_terminal()
-        task._set_status("done")
-        assert task.is_terminal()
-
-    def test_gap_detector_with_decider(self, skill: MemorySkill, api_config: dict[str, str]) -> None:
-        """detect_and_decide returns gap + decision."""
-        from memory_skill.capability_registry import CapabilityRegistry
-        from memory_skill.gap_detector import GapDetector
-        from memory_skill.learning_decider import LearningDecider
-
-        registry = CapabilityRegistry(skill._tree, skill._retriever)
-        decider = LearningDecider(api_config["api_base"], api_config["api_key"], api_config["model"])
-        detector = GapDetector(registry, min_confidence=0.4)
-        detector.set_decider(decider)
-
-        gap, decision = detector.detect_and_decide("gRPC 怎么配置负载均衡？")
-        if gap:
-            assert gap.severity in ("critical", "major", "minor")
-        if decision:
-            assert decision.action in ("skip", "ask", "learn")
-        logger.info("detect_and_decide: gap=%s decision=%s",
-                     gap is not None, decision.action if decision else "no decider")
+        db = os.path.join(str(tmp_path), "lq2.db")
+        q = LearningQueue(db_path=db)
+        a = q.enqueue("skill", "FastAPI", "x")
+        assert q.enqueue("skill", "FastAPI", "y") is None  # dedup
+        assert q.count_open() == 1
+        assert q.mark(a.id, "done") is True
+        assert q.count_open() == 0
+        assert q.mark(a.id, "done") is False  # idempotent
+        q.close()
 
 
 def _mock_chunk(text: str):

@@ -194,39 +194,135 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "memory_learn",
+        "name": "memory_check_skill",
         "description": (
-            "Closed-loop knowledge acquisition: crawl URLs, synthesize markdown, "
-            "ingest into memory, and verify comprehension. Use when the agent "
-            "detects a knowledge gap and has source URLs to learn from. "
-            "Returns task status (crawling/synthesizing/verifying/done/failed)."
+            "Check whether a skill is already known to memory (scoped to the "
+            "skill category). Returns 'known' | 'partial' | 'unknown' with "
+            "matching skill entries. Use BEFORE learning a new topic — if "
+            "known, reuse or update the existing skill instead of re-learning."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "topic": {
+                "skill_name": {
                     "type": "string",
-                    "description": "The knowledge topic to learn about.",
-                },
-                "urls": {
-                    "type": "array",
-                    "description": "List of source URLs to crawl for knowledge.",
-                    "items": {"type": "string"},
+                    "description": "The skill name to check, e.g. 'Docker Compose'.",
                 },
             },
-            "required": ["topic", "urls"],
+            "required": ["skill_name"],
         },
     },
     {
-        "name": "memory_gaps",
+        "name": "memory_teach_skill",
         "description": (
-            "List knowledge gaps detected during conversation — topics the agent "
-            "could not answer confidently. Use to discover what the agent does not "
-            "know, then call memory_learn to fill gaps with source URLs."
+            "Persist a taught skill at high confidence. Use AFTER learning a "
+            "topic (via web search or user instruction): pass the skill title "
+            "and the learned content. Returns the stored entry_id. The user "
+            "may later correct it via memory_update_skill."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Skill title, e.g. 'Docker Compose 多容器部署'.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The learned knowledge (markdown ok).",
+                },
+                "source_urls": {
+                    "type": "array",
+                    "description": "Source URLs used for learning — required, "
+                    "teaching must be backed by external references, not guesswork.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["title", "content", "source_urls"],
+        },
+    },
+    {
+        "name": "memory_update_skill",
+        "description": (
+            "Rewrite a skill entry's content — a correction from the user or "
+            "the agent after learning. Directly replaces the stored content "
+            "(not a semantic merge), so skills stay writable for teaching."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {
+                    "type": "string",
+                    "description": "The skill entry id to update.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The corrected skill content (markdown ok).",
+                },
+            },
+            "required": ["entry_id", "content"],
+        },
+    },
+    {
+        "name": "memory_classify",
+        "description": (
+            "Classify the current user message. REQUIRED after every "
+            "memory_weave call — the next weave() is rejected until "
+            "classification is done. Pass gaps when category='mission': "
+            "system blocks weave until all gaps are taught."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Classification: 'chat' | 'skill' | 'mission' | 'pref' | 'pers'",
+                    "enum": ["chat", "skill", "mission", "pref", "pers"],
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note: skill name, mission summary, etc.",
+                },
+                "gaps": {
+                    "type": "array",
+                    "description": "Required skill names for a mission (blocks weave until taught)",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["category"],
+        },
+    },
+    {
+        "name": "memory_learning_queue",
+        "description": (
+            "List pending learning items: skills the classifier flagged as "
+            "not-yet-mastered and missions awaiting decomposition. Open items "
+            "are rendered by weave as [待学习]/[待拆解] directives — act on "
+            "them and confirm results with the user."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "memory_conclusions",
+        "description": (
+            "List reusable conclusion entries extracted from assistant replies "
+            "(category=conclusion, title + summary + evidence format). Queries "
+            "the store directly by category — NOT semantic search — so the "
+            "result is complete and accurate. Use to verify what conclusions "
+            "the memory system has distilled."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Max conclusions to return (newest first).",
+                },
+            },
         },
     },
 ]
@@ -243,292 +339,20 @@ TOOLS: list[dict[str, Any]] = [
 # Head+tail retention: Chinese replies often put the conclusion at the END,
 # so naive head-only truncation would drop it (KNOWN-ISSUES #9 "结论散落").
 # Keep the first `_HEAD` chars + last `_TAIL` chars, ellipsis in between.
-_MAX_AUTO_INGEST_CHARS: int = 800
-_AUTO_INGEST_HEAD: int = 490
-_AUTO_INGEST_TAIL: int = 300
-_AUTO_INGEST_ELLIPSIS: str = "\n…[中段省略]…\n"
-
-
-def _clip_auto_ingest(content: str) -> str:
-    """Head+tail truncation for auto-ingest: preserve opening context and
-    closing conclusion, drop the middle — embedding only sees ≤512 tokens
-    anyway (bge-large-en-v1.5), so retrieval quality is unaffected."""
-    if len(content) <= _MAX_AUTO_INGEST_CHARS:
-        return content
-    head = content[:_AUTO_INGEST_HEAD]
-    tail = content[-_AUTO_INGEST_TAIL:]
-    if len(head) + len(_AUTO_INGEST_ELLIPSIS) + len(tail) <= _MAX_AUTO_INGEST_CHARS:
-        return head + _AUTO_INGEST_ELLIPSIS + tail
-    return head + tail
-
 
 class ToolHandler:
-    """Handles MCP tool invocations against a MemorySkill instance.
-
-    Parameters
-    ----------
-    skill:
-        A fully-initialized ``MemorySkill`` instance.
-    """
+    """Dispatches MCP tool calls to standalone handler functions in tools.py."""
 
     def __init__(self, skill: MemorySkill) -> None:
         self._skill = skill
 
-    # ── Dispatch ──────────────────────────────────────────────────────────
-
     def handle(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch a tool call to the appropriate handler.
-
-        Returns
-        -------
-        dict
-            A JSON-serializable result dict. On error, ``{"error": str(...)}``.
-        """
+        from memory_skill.tools import DISPATCH
+        handler = DISPATCH.get(tool_name)
+        if handler is None:
+            return {"error": f"Unknown tool: {tool_name}"}
         try:
-            if tool_name == "memory_search":
-                return self._search(
-                    query=arguments.get("query", ""),
-                    limit=arguments.get("limit", 10),
-                )
-            elif tool_name == "memory_weave":
-                return self._weave(
-                    user_message=arguments.get("user_message", ""),
-                    scene_summary=arguments.get("scene_summary", ""),
-                    assistant_content=arguments.get("assistant_content", ""),
-                )
-            elif tool_name == "memory_ingest":
-                return self._ingest(
-                    content=arguments.get("content", ""),
-                    role=arguments.get("role", "user"),
-                )
-            elif tool_name == "memory_status":
-                return self._status()
-            elif tool_name == "memory_feedback":
-                return self._feedback(
-                    query_id=arguments.get("query_id", ""),
-                    outcome=arguments.get("outcome", "auto"),
-                    cited_ids=arguments.get("cited_ids", []),
-                    search_results=arguments.get("search_results"),
-                    final_response=arguments.get("final_response"),
-                )
-            elif tool_name == "memory_learn":
-                return self._learn(
-                    topic=arguments.get("topic", ""),
-                    urls=arguments.get("urls", []),
-                )
-            elif tool_name == "memory_gaps":
-                return self._gaps()
-            else:
-                return {"error": f"Unknown tool: {tool_name}"}
+            return handler(self._skill, arguments)
         except Exception as exc:
             logger.exception("Tool %s failed", tool_name)
             return {"error": f"{type(exc).__name__}: {exc}"}
-
-    # ── Tool Handlers ──────────────────────────────────────────────────────
-
-    def _weave(self, user_message: str, scene_summary: str,
-               assistant_content: str = "") -> dict[str, Any]:
-        """Auto-assemble layered memory context, with auto-ingest of both sides.
-
-        V10: Every weave call auto-ingests the user's message AND the previous
-        assistant response (if provided). This mirrors the Room framework's
-        conversation-block pattern — both sides of every exchange are persisted
-        without manual ingest. The ImportanceScorer filters out trivial content.
-        """
-        # ── Auto-ingest user message ────────────────────────────────────
-        if user_message and user_message.strip():
-            self._ingest(content=_clip_auto_ingest(user_message), role="user")
-
-        # ── Auto-ingest previous assistant response ─────────────────────
-        if assistant_content and assistant_content.strip():
-            self._ingest(content=_clip_auto_ingest(assistant_content), role="assistant")
-
-        ctx = self._skill.weave(
-            user_message=user_message,
-            scene_summary=scene_summary,
-        )
-        return {
-            "tier1_context": ctx.tier1_context,
-            "tier2_context": ctx.tier2_context,
-            "memory_nudge": ctx.memory_nudge,
-            "prompt_block": ctx.to_prompt_block(),
-            "is_empty": ctx.is_empty
-        }
-
-    def _search(self, query: str, limit: int) -> dict[str, Any]:
-        """Search agent memory for relevant past conversations."""
-        if not query.strip():
-            return {"results": [], "note": "Empty query — no search performed", "query_id": ""}
-
-        limit = max(1, min(limit, 100))
-
-        try:
-            envelope = self._skill.retrieve(query, limit=limit)
-        except Exception as exc:
-            logger.warning("Retrieval failed: %s", exc)
-            return {
-                "results": [],
-                "note": f"Retrieval error: {type(exc).__name__}: {exc}",
-                "query_id": query,
-            }
-
-        results = []
-        for entry in envelope.entries:
-            results.append({
-                "id": entry.id,
-                "content": entry.content,
-                "relevance": round(entry.weight, 4),
-                "category": entry.category,
-                "created_at": entry.created_at.isoformat(),
-                "tags": entry.tags,
-            })
-
-        note = None
-        if not results:
-            note = "No matching memories found"
-        elif envelope.truncated:
-            note = (
-                f"Results truncated — {envelope.total_candidates} total "
-                f"candidates, showing top {len(results)}"
-            )
-
-        return {
-            "results": results,
-            "count": len(results),
-            "total_candidates": envelope.total_candidates,
-            "query_id": query,
-            **({"note": note} if note else {}),
-        }
-
-    def _ingest(self, content: str, role: str) -> dict[str, Any]:
-        """Save a dialogue turn into the memory system."""
-        if not content.strip():
-            return {"error": "Empty content — nothing to ingest"}
-
-        from memory_skill.contracts import DialogueTurn
-
-        turn_id = f"mcp_{role}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}"
-        turn = DialogueTurn(
-            id=turn_id,
-            role=role,
-            content=content,
-            timestamp=datetime.now(UTC),
-        )
-
-        try:
-            envelope = self._skill.ingest(turn)
-        except Exception as exc:
-            logger.exception("Ingest failed")
-            return {"error": f"Ingest error: {type(exc).__name__}: {exc}"}
-
-        return {
-            "status": "ingested",
-            "turn_id": turn_id,
-            "role": role,
-            "content_length": len(content),
-            "count": envelope.total_candidates,
-            "timestamp": envelope.timestamp.isoformat()
-        }
-
-    def _status(self) -> dict[str, Any]:
-        """Return a health summary of the memory system."""
-        try:
-            health = self._skill.health()
-        except Exception as exc:
-            logger.exception("Health check failed")
-            return {"error": f"Health check error: {type(exc).__name__}: {exc}"}
-
-        # ── Protocol injection ──
-        health["protocol"] = MEMORY_PROTOCOL
-
-        return health
-
-    def _feedback(
-        self,
-        query_id: str,
-        outcome: str,
-        cited_ids: list[str],
-        search_results: list[dict[str, Any]] | None = None,
-        final_response: str | None = None,
-    ) -> dict[str, Any]:
-        """Record feedback and boost weights for cited memories."""
-        if not query_id.strip():
-            return {"error": "query_id is required"}
-
-        # ── Auto-detect outcome if requested ──────────────────────────────
-        if outcome == "auto" or (not outcome):
-            from memory_skill.feedback import auto_detect_outcome
-
-            outcome = auto_detect_outcome(
-                query=query_id,
-                search_results=search_results or [],
-                final_response=final_response or "",
-            )
-            logger.debug(
-                "Auto-detected outcome: %s for query %r", outcome, query_id
-            )
-        elif outcome not in ("positive", "negative", "neutral"):
-            return {
-                "error": (
-                    f"Invalid outcome '{outcome}'. "
-                    "Must be one of: positive, negative, neutral, auto"
-                )
-            }
-
-        cited_ids = cited_ids or []
-
-        # ── Boost weights for cited memories ───────────────────────────────
-        for mid in cited_ids[:3]:
-            try:
-                self._skill.boost_weight(mid)
-            except Exception:
-                pass
-
-        return {
-            "status": "recorded",
-            "query_id": query_id,
-            "outcome": outcome,
-            "recorded": len(cited_ids)
-        }
-
-    # ── Learning loop tools ─────────────────────────────────────────────
-
-    def _learn(self, topic: str, urls: list[str]) -> dict[str, Any]:
-        """Closed-loop knowledge acquisition: crawl → synthesize → ingest → verify."""
-        if not topic.strip():
-            return {"error": "topic is required"}
-        if not urls:
-            return {"error": "at least one URL is required"}
-
-        try:
-            task = self._skill.learn(topic, urls)
-            return {
-                "task_id": task.id,
-                "topic": task.topic,
-                "status": task.status,
-                "attempts": task.attempts,
-                "status_log": [
-                    {"status": s, "detail": d}
-                    for s, d, _ in task.status_log
-                ],
-            }
-        except Exception as exc:
-            logger.exception("Learn task failed for %r", topic)
-            return {"error": f"{type(exc).__name__}: {exc}"}
-
-    def _gaps(self) -> dict[str, Any]:
-        """Return currently detected knowledge gaps."""
-        gaps = self._skill.gaps
-        return {
-            "count": len(gaps),
-            "gaps": [
-                {
-                    "query": g.query[:120],
-                    "branch": g.branch,
-                    "severity": g.severity,
-                    "confidence": g.confidence,
-                    "decision": g.decision.action if g.decision else None,
-                }
-                for g in gaps[-20:]
-            ],
-        }

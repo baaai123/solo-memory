@@ -69,6 +69,34 @@ class MemoryEnvelope:
 
 
 @dataclass(frozen=True)
+class IngestReceipt:
+    """The result of persisting a turn through the ingest pipeline (see ADR-0001).
+
+    Replaces the empty MemoryEnvelope that ``ingest_dialogue`` used to return —
+    the write chain now reports what actually happened, so callers and tests
+    can observe dedup, weight, and per-stage enrichment status.
+
+    Fields:
+        entry_id: The id of the entry stored in the learned store
+            (``"dialogue:{turn.id}"`` when newly inserted, or the merged
+            duplicate's id when deduped).
+        deduped: True when the turn merged into an existing semantically
+            similar entry (weight +0.05) instead of inserting a new one.
+        weight: The entry's weight after the write (0.5 on new insert, or
+            the bumped duplicate weight when deduped).
+        staged: Per-stage status for enrichable stages. Keys: ``"title"``,
+            ``"extracted"``, ``"gap"``. Each value is a dict with at least
+            ``ok: bool``; on skip/failure it also carries ``reason``.
+        timestamp: When the write occurred.
+    """
+    entry_id: str
+    deduped: bool
+    weight: float
+    staged: dict[str, dict]
+    timestamp: datetime
+
+
+@dataclass(frozen=True)
 class SawEntry:
     """A single frame in the Saw ring buffer (short-term screen observation buffer).
 
@@ -131,6 +159,28 @@ class ModelLoadError(MemorySkillError):
 def utcnow() -> datetime:
     """Return the current UTC datetime."""
     return datetime.now(UTC)
+
+
+# ── Ingest truncation policy (ADR-0001) ────────────────────────────────────────
+# Head+tail truncation for auto-ingest: preserve opening context and closing
+# conclusion, drop the middle — embedding only sees ≤512 tokens anyway
+# (bge-large-en-v1.5), so retrieval quality is unaffected. Every ingest entry
+# point applies this policy so proxy and MCP write paths behave identically.
+_MAX_AUTO_INGEST_CHARS: int = 800
+_AUTO_INGEST_HEAD: int = 490
+_AUTO_INGEST_TAIL: int = 300
+_AUTO_INGEST_ELLIPSIS: str = "\n…[中段省略]…\n"
+
+
+def clip_auto_ingest(content: str) -> str:
+    """Truncate long content head+tail for ingest (see ADR-0001)."""
+    if len(content) <= _MAX_AUTO_INGEST_CHARS:
+        return content
+    head = content[:_AUTO_INGEST_HEAD]
+    tail = content[-_AUTO_INGEST_TAIL:]
+    if len(head) + len(_AUTO_INGEST_ELLIPSIS) + len(tail) <= _MAX_AUTO_INGEST_CHARS:
+        return head + _AUTO_INGEST_ELLIPSIS + tail
+    return head + tail
 
 
 # ─── Configuration ─────────────────────────────────────────────────────────────

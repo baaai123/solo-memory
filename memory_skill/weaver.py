@@ -99,6 +99,9 @@ class WeaveContext:
 
     def to_prompt_block(self) -> str:
         parts: list[str] = []
+        # Classification directive — MANDATORY every turn
+        parts.append("[分类指令] 必须对上一轮用户消息分类 — memory_classify(category=chat|skill|mission|pref|pers)"
+                     " — 不可跳过，否则下一轮 weave 拒绝服务")
         if self.time_context:
             parts.append(self.time_context)
         # tier2 first (if available), tier1 as fallback
@@ -190,7 +193,7 @@ def weave(
                 stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
             ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
         ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
-        ctx.memory_nudge = _build_nudge(stores.learned_store)
+        ctx.memory_nudge = _build_nudge(stores.learned_store, user_message)
         ctx.skill_context = _build_skill_context(stores.retriever, user_message)
         ctx.mission_context = _build_mission_context(stores.retriever, user_message)
         ctx.pref_context = _build_pref_context(stores.retriever)
@@ -207,7 +210,7 @@ def weave(
             stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
         ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
     ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
-    ctx.memory_nudge = _build_nudge(stores.learned_store)
+    ctx.memory_nudge = _build_nudge(stores.learned_store, user_message)
     ctx.skill_context = _build_skill_context(stores.retriever, user_message)
     ctx.mission_context = _build_mission_context(stores.retriever, user_message)
     ctx.pref_context = _build_pref_context(stores.retriever)
@@ -215,7 +218,7 @@ def weave(
     ctx.gap_context = _build_gap_context(stores.gaps)
     ctx.tree_context = _build_tree_context(stores.tree, user_message)
     ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
-    if _has_high_weight(stores.learned_store):
+    if _has_high_weight(stores.learned_store, user_message):
         ctx.needs_second_pass = True
     return ctx
 
@@ -386,12 +389,19 @@ def _build_emotion_context(
         return f"[你当前对{partner}的感受] 好感度偏低——与{partner}的互动常有不快。语气可以冷淡或回避。"
 
 
-def _build_nudge(memory: MemorySource) -> str:
+def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
     """Build nudge with behavioral intensity based on weight.
 
     V7 upgrade:
       weight >= 0.95 → "⚠ 务必...——这件事很重要"
       weight >= 0.85 → "💡 可以...——让对话更自然"
+
+    V9 (ADR-0001 candidate 8): nudge entries are gated on relevance to the
+    current ``user_message`` via distinctive-token overlap — an unrelated
+    high-weight entry (e.g. a stale "pip install failed" from a past
+    session) is no longer injected every turn as noise.  When no
+    ``user_message`` is given, the gate is skipped (keep historical
+    behaviour so empty-context weaves still surface critical items).
     """
     try:
         entries = memory.search(
@@ -404,6 +414,12 @@ def _build_nudge(memory: MemorySource) -> str:
     high = [e for e in entries if e.weight >= _NUDGE_WEIGHT_THRESHOLD]
     if not high:
         return ""
+
+    if user_message.strip():
+        from memory_skill.capability_registry import _token_overlap
+        high = [e for e in high if _token_overlap(user_message, e.content)]
+        if not high:
+            return ""
 
     # Sort by weight descending
     high.sort(key=lambda e: e.weight, reverse=True)
@@ -445,12 +461,23 @@ def _count_recent_turns(dialogue: DialogueSource) -> int:
         return 0
 
 
-def _has_high_weight(memory: MemorySource) -> bool:
+def _has_high_weight(memory: MemorySource, user_message: str = "") -> bool:
+    """True when a relevant high-weight entry exists (needs_second_pass gate).
+
+    Mirrors the candidate-8 relevance gate of ``_build_nudge`` so the deep
+    branch's second-pass flag agrees with what nudge would actually surface.
+    """
     try:
         entries = memory.search(
             "", limit=5,
             filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD}})
-        return any(e.weight >= _NUDGE_WEIGHT_THRESHOLD for e in entries)
+        high = [e for e in entries if e.weight >= _NUDGE_WEIGHT_THRESHOLD]
+        if not high:
+            return False
+        if user_message.strip():
+            from memory_skill.capability_registry import _token_overlap
+            return any(_token_overlap(user_message, e.content) for e in high)
+        return True
     except Exception as e:
         _logger.debug("High-weight check failed: %s", e)
         return False
@@ -550,20 +577,39 @@ def _build_mission_context(retriever: RetrievalSource, user_message: str) -> str
 
 
 def _build_gap_context(gaps: list) -> str:
+    """Render open learning-queue items as explicit agent directives.
+
+    Unlike the legacy passive gap display, these are actionable commands
+    for the main agent: learn an unknown skill, or decompose a mission
+    into steps before executing it.  The agent is expected to act on them
+    (check_skill → web search → teach_skill; mission_decompose) and to
+    confirm the result with the user.
+    """
     if not gaps:
         return ""
-    recent = gaps[-5:]
-    lines = ["[知识缺口]"]
-    for g in recent:
-        severity_mark = {"critical": "🔴", "major": "🟡", "minor": "⚪"}.get(g.severity, "")
-        action = g.decision.action if g.decision else None
-        if action == "learn":
-            marker = f"{severity_mark} 📚"
-        elif action == "ask":
-            marker = f"{severity_mark} ❓"
-        else:
-            marker = severity_mark
-        lines.append(f"{marker} {g.query}")
+    skill_items = [g for g in gaps if getattr(g, "kind", "") == "skill"]
+    mission_items = [g for g in gaps if getattr(g, "kind", "") == "mission"]
+    other = [g for g in gaps if getattr(g, "kind", "") not in ("skill", "mission")]
+
+    lines: list[str] = []
+
+    def _query(g) -> str:
+        return getattr(g, "query", "") or str(g)[:80]
+
+    if skill_items:
+        lines.append("[待学习] 先 websearch 搜索 → 找到权威来源 → "
+                     "memory_teach_skill(必须带 source_urls) → 反馈用户确认：")
+        for g in skill_items[:5]:
+            lines.append(f"  📚 {_query(g)}")
+
+    if mission_items:
+        lines.append("[待拆解] 以下任务尚未分解为步骤（由主 agent 自行分析拆解）：")
+        for g in mission_items[:5]:
+            lines.append(f"  📋 {_query(g)}")
+
+    if other:
+        lines.append("[待处理] " + "; ".join(_query(g) for g in other[:3]))
+
     return "\n".join(lines)
 
 
