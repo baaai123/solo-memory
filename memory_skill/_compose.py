@@ -46,6 +46,7 @@ class MemorySystem:
     ingestor: object = None
     retriever: object = None
     learning_queue: object = None
+    pending_store: object = None
     _classify_pending: str | None = None
     _pending_gaps: set = field(default_factory=set)
     _composed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -110,6 +111,7 @@ class MemorySystem:
             emotion_outcomes=getattr(self, '_emotion_outcomes', []),
             tree=self.tree,
             gaps=self.gaps,
+            pending_store=getattr(self, 'pending_store', None),
         )
         ctx = weave(stores, user_message, scene_summary, partner=partner)
         ProtocolGate(self).after_weave(user_message)
@@ -272,6 +274,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     from memory_skill.embedder import Embedder
     from memory_skill.ingestor import Ingestor
     from memory_skill.learned_store import LearnedStore
+    from memory_skill.pending_store import PendingStore
     from memory_skill.retriever import Retriever
     from memory_skill.saw_buffer import SawRingBuffer
 
@@ -284,6 +287,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     retriever = Retriever(config=config, dialogue_store=dialogue_store,
                           learned_store=learned_store)
     learning_queue = _build_learning_queue(config) if config.tree_enabled else None
+    pending_store = PendingStore(config.db_path) if config.tree_enabled else None
     ingestor = Ingestor(config=config, saw_buffer=saw_buffer,
                         dialogue_store=dialogue_store,
                         learned_store=learned_store, embedder=embedder,
@@ -294,7 +298,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
         config=config, embedder=embedder, saw_buffer=saw_buffer,
         dialogue_store=dialogue_store, learned_store=learned_store,
         tree=tree, ingestor=ingestor, retriever=retriever,
-        learning_queue=learning_queue,
+        learning_queue=learning_queue, pending_store=pending_store,
         _classify_pending=None, _pending_gaps=set(),
         _composed_at=datetime.now(UTC),
     )

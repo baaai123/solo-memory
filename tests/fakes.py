@@ -188,8 +188,17 @@ class FakeLearnedStore:
         qv = self._embed(query)
         scored: list[tuple[float, MemoryEntry]] = []
         for e in self._entries.values():
-            if filters and filters.get("category") and e.category != filters["category"]:
-                continue
+            if filters:
+                cat_filter = filters.get("category")
+                if isinstance(cat_filter, dict) and cat_filter.get("$ne"):
+                    if e.category == cat_filter["$ne"]:
+                        continue
+                elif cat_filter and e.category != cat_filter:
+                    continue
+                weight_filter = filters.get("weight")
+                if isinstance(weight_filter, dict) and weight_filter.get("$gte"):
+                    if e.weight < weight_filter["$gte"]:
+                        continue
             ev = self._embeddings.get(e.id, [])
             if qv and ev:
                 sim = sum(a * b for a, b in zip(qv, ev))
@@ -217,6 +226,16 @@ class FakeLearnedStore:
     def get_weight(self, entry_id: str) -> float | None:
         e = self._entries.get(entry_id)
         return e.weight if e else None
+
+    def list_by_category(self, category: str, limit: int = 10,
+                         sort_by: str = "created_at",
+                         descending: bool = True) -> list[MemoryEntry]:
+        matches = [e for e in self._entries.values() if e.category == category]
+        key = "updated_at" if sort_by == "updated_at" else "created_at"
+        matches.sort(key=lambda e: getattr(e, key).timestamp()
+                     if getattr(e, key) else 0.0,
+                     reverse=descending)
+        return matches if limit <= 0 else matches[:limit]
 
     def set_weight(self, entry_id: str, weight: float) -> None:
         entry = self._entries.get(entry_id)
@@ -471,6 +490,9 @@ def build_fast_system(config=None):
         learning_queue=None,
     )
 
+    from memory_skill.pending_store import PendingStore
+    pending_store = PendingStore(config.db_path)
+
     ms = object.__new__(MemorySystem)
     ms.__dict__.update(
         config=config,
@@ -482,6 +504,7 @@ def build_fast_system(config=None):
         ingestor=ingestor,
         retriever=retriever,
         learning_queue=None,
+        pending_store=pending_store,
         _classify_pending=None,
         _pending_gaps=set(),
         _composed_at=datetime.now(UTC),

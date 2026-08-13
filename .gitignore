@@ -39,3 +39,8 @@ build/
 
 # OpenCode project plugins (user-level, not repo)
 .opencode/
+
+# Runtime data / backups (not source)
+chroma/
+*.db.bak-*
+*.db_chroma.bak-*/

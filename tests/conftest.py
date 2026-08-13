@@ -137,14 +137,24 @@ def skill(tmp_db: str) -> Iterator[MemorySkill]:
         agent_name="test_agent",
         # API credentials passed through env (read by importance_llm + tree)
     )
-    # Set env vars so that TreeManager and LLMImportanceGate pick them up
-    os.environ["IMPORTANCE_API_KEY"] = _API_KEY
-    os.environ["IMPORTANCE_API_BASE"] = _API_BASE
-    os.environ["IMPORTANCE_MODEL"] = _MODEL
+    # Preserve existing IMPORTANCE_* env (from .env / shell) — only set from
+    # DEEPSEEK_API_KEY when it's actually present, never overwrite with empty.
+    if _API_KEY:
+        os.environ["IMPORTANCE_API_KEY"] = _API_KEY
+        os.environ["IMPORTANCE_API_BASE"] = _API_BASE
+        os.environ["IMPORTANCE_MODEL"] = _MODEL
 
     sk = MemorySkill(config)
     yield sk
-    sk._conn.close()
+    # MemorySystem exposes dialogue_store, not a raw _conn
+    try:
+        sk.dialogue_store._conn.close()
+    except Exception:
+        pass
+    try:
+        sk.learned_store._client.clear_system_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture(scope="module")

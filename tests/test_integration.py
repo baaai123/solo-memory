@@ -118,9 +118,11 @@ def skill(tmp_db: str, api_config: dict[str, str]) -> MemorySkill:
     proj_root = memory_skill.__file__
 
     # Set env vars for LLMImportanceGate + TreeManager
-    os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
-    os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
-    os.environ["IMPORTANCE_MODEL"] = api_config["model"]
+    # (only when a real key exists — never overwrite .env with empty)
+    if api_config["api_key"]:
+        os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
+        os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
+        os.environ["IMPORTANCE_MODEL"] = api_config["model"]
 
     config = MemorySkillConfig(
         db_path=tmp_db,
@@ -134,7 +136,7 @@ def skill(tmp_db: str, api_config: dict[str, str]) -> MemorySkill:
 @pytest.fixture(scope="module")
 def tree(skill: MemorySkill, api_config: dict[str, str]) -> TreeManager:
     """Expose the TreeManager for direct tree tests."""
-    return skill._tree
+    return skill.tree
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -195,7 +197,7 @@ class TestIngest:
 
     def test_ingest_count(self, skill: MemorySkill) -> None:
         """Dialogue store has expected turns (trivial ones filtered)."""
-        count = skill._dialogue_store.count()
+        count = skill.dialogue_store.count()
         # 8 substantive turns + 2 trivial → trivial should survive but with low weight
         assert count >= 10, f"Expected >=10 turns, got {count}"
 
@@ -284,10 +286,16 @@ class TestTreeMemory:
 class TestWeave:
     """Layered memory context assembly."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_weave_gate(self, skill: MemorySkill) -> None:
+        """Reset the classify gate so each weave test starts clean."""
+        skill._classify_pending = None
+        skill._pending_gaps = set()
+
     def test_weave_with_memories(self, skill: MemorySkill) -> None:
         """After ingest, weave returns non-empty context."""
         # Ensure test data is present (this test may run independently of TestIngest)
-        if skill._dialogue_store.count() < 10:
+        if skill.dialogue_store.count() < 10:
             for turn in _INGEST_TURNS:
                 skill.ingest(turn)
         ctx = skill.weave(
@@ -457,10 +465,10 @@ class TestFeedback:
         results = skill.retrieve("Python", limit=10)
         # Find an entry accessible via get_weight (ID with ':')
         for e in results.entries:
-            current = skill._learned_store.get_weight(e.id)
+            current = skill.learned_store.get_weight(e.id)
             if current is not None:
-                skill._learned_store.set_weight(e.id, 0.85)
-                boosted = skill._learned_store.get_weight(e.id)
+                skill.learned_store.set_weight(e.id, 0.85)
+                boosted = skill.learned_store.get_weight(e.id)
                 assert boosted == 0.85, f"Expected 0.85, got {boosted}"
                 return
         # Fallback: test succeeds if no weightable entry found
@@ -610,10 +618,13 @@ class TestMCPTools:
     def test_tool_weave(self, skill: MemorySkill) -> None:
         """ToolHandler.weave() auto-ingests + returns context."""
         handler = self._make_handler(skill)
+        # weave is gated on the previous turn being classified — classify first
+        skill._classify_pending = None
         result = handler.handle("memory_weave", {
             "user_message": "测试 MCP weave",
             "scene_summary": "MCP 协议层测试",
         })
+        assert "error" not in result, f"weave failed: {result}"
         assert "prompt_block" in result
         assert "is_empty" in result
         logger.info("MCP weave prompt_block (%d chars)", len(result.get("prompt_block", "")))
@@ -625,9 +636,10 @@ class TestMCPTools:
             "query": "Python FastAPI",
             "limit": 5,
         })
+        assert "error" not in result, f"search failed: {result}"
         assert "results" in result
-        assert "count" in result
-        logger.info("MCP search: %d results", result["count"])
+        assert "total_candidates" in result
+        logger.info("MCP search: %d results", result["total_candidates"])
 
     def test_tool_ingest(self, skill: MemorySkill) -> None:
         """ToolHandler.ingest() stores a turn."""
@@ -636,8 +648,9 @@ class TestMCPTools:
             "content": "MCP 测试消息",
             "role": "user",
         })
-        assert result.get("status") == "ingested"
-        assert "turn_id" in result
+        assert "error" not in result, f"ingest failed: {result}"
+        assert "entry_id" in result
+        assert "deduped" in result
 
     def test_tool_feedback(self, skill: MemorySkill) -> None:
         """ToolHandler.feedback() records outcome."""
@@ -647,7 +660,8 @@ class TestMCPTools:
             "outcome": "positive",
             "cited_ids": [],
         })
-        assert result.get("status") == "recorded"
+        assert "error" not in result, f"feedback failed: {result}"
+        assert result.get("status") == "feedback_recorded"
 
     def test_tool_unknown(self, skill: MemorySkill) -> None:
         """Unknown tool returns error dict, not exception."""
@@ -671,11 +685,15 @@ class TestTransparentProxy:
         from memory_skill import MemorySkill, MemorySkillConfig
         import memory_skill as _ms
 
-        os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
-        os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
-        os.environ["IMPORTANCE_MODEL"] = api_config["model"]
+        if api_config["api_key"]:
+            os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
+            os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
+            os.environ["IMPORTANCE_MODEL"] = api_config["model"]
 
         sk = MemorySkill(MemorySkillConfig(db_path=tmp_db, agent_name="proxy_test"))
+        # Proxy internally calls auto_context → weave → classify gate must be clean
+        sk._classify_pending = None
+        sk._pending_gaps = set()
         sk.ingest(DialogueTurn(
             id="proxy_pre", role="user",
             content="我用 Python 写了一个 RAG 项目", timestamp=utcnow(),
@@ -695,11 +713,12 @@ class TestTransparentProxy:
 
     def test_auto_ingest_persists(self, proxy_skill: MemorySkill) -> None:
         """auto_ingest() persists both sides."""
-        before = proxy_skill._dialogue_store.count()
+        before = proxy_skill.dialogue_store.count()
         proxy_skill.auto_ingest("测试消息", "这是 AI 回复")
-        after = proxy_skill._dialogue_store.count()
+        after = proxy_skill.dialogue_store.count()
         assert after >= before + 1
 
+    @_NEEDS_LLM
     def test_proxy_chat_completions(
         self, proxy_skill: MemorySkill, api_config: dict[str, str],
     ) -> None:
@@ -722,7 +741,7 @@ class TestTransparentProxy:
         proxy.start(block=False)
 
         try:
-            diag_before = proxy_skill._dialogue_store.count()
+            diag_before = proxy_skill.dialogue_store.count()
 
             request_body = json.dumps({
                 "model": api_config["model"],
@@ -747,7 +766,7 @@ class TestTransparentProxy:
 
             # Give auto-ingest a moment to complete
             time.sleep(1)
-            diag_after = proxy_skill._dialogue_store.count()
+            diag_after = proxy_skill.dialogue_store.count()
             assert diag_after > diag_before, (
                 f"Dialogue store should grow: {diag_before} → {diag_after}"
             )
@@ -956,22 +975,23 @@ class TestCapabilityGap:
     @pytest.fixture(scope="function")
     def gap_skill(self, tmp_db: str, api_config: dict[str, str]) -> MemorySkill:
         import memory_skill as _ms
-        os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
-        os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
-        os.environ["IMPORTANCE_MODEL"] = api_config["model"]
+        if api_config["api_key"]:
+            os.environ["IMPORTANCE_API_KEY"] = api_config["api_key"]
+            os.environ["IMPORTANCE_API_BASE"] = api_config["api_base"]
+            os.environ["IMPORTANCE_MODEL"] = api_config["model"]
         sk = MemorySkill(MemorySkillConfig(db_path=tmp_db, agent_name="gap_test"))
         return sk
 
     def test_capability_list(self, gap_skill: MemorySkill) -> None:
         from memory_skill.capability_registry import CapabilityRegistry
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        reg = CapabilityRegistry(gap_skill.tree, gap_skill.retriever)
         caps = reg.list_capabilities()
         assert len(caps) == 5
         assert any(c.branch_id == "assistant_skill" for c in caps)
 
     def test_can_answer_false_on_empty(self, gap_skill: MemorySkill) -> None:
         from memory_skill.capability_registry import CapabilityRegistry
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        reg = CapabilityRegistry(gap_skill.tree, gap_skill.retriever)
         can, conf = reg.can_answer("QuantumFlux 协议的 ZetaWave 变体？")
         # Smoke test: ensure it returns valid numbers
         assert isinstance(can, bool)
@@ -988,7 +1008,7 @@ class TestCapabilityGap:
             id="cap_async", role="user",
             content="异步用 asyncio 和 await 关键字", timestamp=utcnow(),
         ))
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        reg = CapabilityRegistry(gap_skill.tree, gap_skill.retriever)
         can, conf = reg.can_answer("Python 怎么做异步？")
         assert can is True, f"Should answer, confidence={conf}"
 
@@ -1004,7 +1024,7 @@ class TestCapabilityGap:
             id="cap_docker", role="user",
             content="Docker 部署用 docker build、docker run 和 docker compose", timestamp=utcnow(),
         ))
-        reg = CapabilityRegistry(gap_skill._tree, gap_skill._retriever)
+        reg = CapabilityRegistry(gap_skill.tree, gap_skill.retriever)
         can, conf = reg.can_answer("量子场论重整化群 是什么？")
         assert can is False, f"Unrelated query answered: can={can} conf={conf}"
 
@@ -1014,7 +1034,7 @@ class TestCapabilityGap:
             id="cap_sem", role="user",
             content="Python 用 asyncio 做异步编程", timestamp=utcnow(),
         ))
-        entries = gap_skill._learned_store.search("Python 怎么做异步", limit=5)
+        entries = gap_skill.learned_store.search("Python 怎么做异步", limit=5)
         assert entries, "expected at least one entry"
         assert all(
             e.semantic_score is not None and 0.0 <= e.semantic_score <= 1.0

@@ -43,7 +43,12 @@ def call_llm(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            content = resp.choices[0].message.content
+            msg = resp.choices[0].message
+            content = msg.content
+            # Reasoning models (e.g. deepseek-v4-flash) return the answer in
+            # reasoning_content with empty content — fall back to it.
+            if not content or not content.strip():
+                content = getattr(msg, "reasoning_content", None)
             if content and content.strip():
                 return content
         except Exception as exc:

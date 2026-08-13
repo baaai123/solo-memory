@@ -167,7 +167,12 @@ class Retriever:
         # the requested category.
         if filters and filters.get("category"):
             wanted = filters["category"]
-            if wanted == "default":
+            if isinstance(wanted, dict) and wanted.get("$ne"):
+                # Exclusion filter (e.g. {"$ne": "default"}): BM25 leg only
+                # carries raw dialogue turns, which never carry the excluded
+                # category — keep them all.
+                pass
+            elif wanted == "default":
                 bm25_entries = [
                     e for e in bm25_entries
                     if e.category == "dialogue" or e.category == "default"

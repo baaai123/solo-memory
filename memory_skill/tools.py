@@ -175,7 +175,33 @@ def handle_classify(skill, args: dict[str, Any]) -> dict[str, Any]:
         skill._pending_gaps = set(g.strip() for g in gaps if g.strip())
     else:
         skill._pending_gaps.clear()
+    _enqueue_if_learning(skill, category, note, gaps)
     return {"status": "classified", "category": category, "note": note}
+
+
+def _enqueue_if_learning(skill, category: str, note: str, gaps) -> None:
+    """Enqueue skill/mission items into the learning queue.
+
+    The classifier routing a turn to ``skill`` or ``mission`` is the only
+    write-side entry of the active-learning loop (see learning_queue docs).
+    Without this, [待学习]/[待拆解] directives never appear for new turns.
+    Dedup happens inside ``enqueue`` (identical open items are skipped).
+    """
+    if category not in ("skill", "mission"):
+        return
+    query = (note or "").strip()
+    if not query:
+        return
+    queue = getattr(skill, "learning_queue", None)
+    if queue is None:
+        return
+    detail = ""
+    if category == "mission" and gaps:
+        detail = "所需技能: " + ", ".join(str(g) for g in gaps if g)
+    try:
+        queue.enqueue(category, query, detail=detail)
+    except Exception as exc:
+        logger.warning("learning_queue enqueue failed: %s", exc)
 
 
 def handle_learning_queue(skill, args: dict[str, Any]) -> dict[str, Any]:
@@ -198,11 +224,7 @@ def handle_learning_queue(skill, args: dict[str, Any]) -> dict[str, Any]:
 def handle_conclusions(skill, args: dict[str, Any]) -> dict[str, Any]:
     limit = args.get("limit", 10)
     try:
-        entries = [
-            e for e in skill.learned_store._entries.values()
-            if getattr(e, "category", None) == "conclusion"
-        ]
-        entries.sort(key=lambda e: getattr(e, "created_at", 0), reverse=True)
+        entries = skill.learned_store.list_by_category("conclusion", limit=limit)
         return {
             "conclusions": [
                 {
@@ -212,11 +234,141 @@ def handle_conclusions(skill, args: dict[str, Any]) -> dict[str, Any]:
                     "content": e.content,
                     "weight": e.weight,
                 }
-                for e in entries[:limit]
+                for e in entries
             ],
         }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_learning_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Mark a learning-queue item done/skipped (e.g. a completed mission).
+
+    Missions are never auto-closed by teach_skill (that only matches
+    ``kind=skill``); the agent closes them explicitly once the mission has
+    been decomposed or executed. Requires the item id from
+    ``memory_learning_queue``.
+    """
+    item_id = args.get("item_id", "")
+    status = args.get("status", "done")
+    if not item_id.strip():
+        return {"error": "item_id is required"}
+    if status not in ("done", "skipped"):
+        return {"error": f"status must be 'done' or 'skipped', got {status!r}"}
+    queue = getattr(skill, "learning_queue", None)
+    if queue is None:
+        return {"error": "learning_queue not available (tree disabled?)"}
+    try:
+        ok = queue.mark(item_id.strip(), status)
+        return {"status": "marked" if ok else "not_found_or_already_closed",
+                "item_id": item_id.strip(), "new_status": status}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_distill(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Turn dialogue fragments into reviewable candidate cards.
+
+    Pure decision-support: compresses fragments into topic/summary/evidence
+    candidates and writes them to the pending store.  Nothing is asserted
+    or promoted — the agent reviews via memory_pending and decides.
+
+    ``offset``/``limit`` walk the history window by window (default: newest
+    60 turns).  Pass ``offset=60`` next to reach older memories.
+    """
+    pending = getattr(skill, "pending_store", None)
+    if pending is None:
+        return {"error": "pending_store not available (tree disabled?)"}
+    from memory_skill.distill import distill as _distill
+    try:
+        return _distill(
+            skill.dialogue_store, pending,
+            since_days=args.get("since_days", 7),
+            offset=args.get("offset", 0),
+            limit=args.get("limit", 60),
+        )
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_pending(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """List open distill candidates awaiting agent review."""
+    pending = getattr(skill, "pending_store", None)
+    if pending is None:
+        return {"error": "pending_store not available (tree disabled?)"}
+    try:
+        items = pending.list_open(limit=args.get("limit", 20))
+        return {
+            "count": len(items),
+            "items": [
+                {
+                    "candidate_id": c.candidate_id,
+                    "topic": c.topic,
+                    "summary": c.summary,
+                    "evidence": c.evidence,
+                    "suggested": c.suggested,
+                    "confidence": c.confidence,
+                    "created_at": c.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                for c in items
+            ],
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_pending_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Accept or reject a distill candidate.
+
+    Accepting a ``conclusion``/``pref``/``pers`` candidate auto-promotes it
+    to the structured store (the agent's decision is the review gate).
+    Accepting a ``skill`` candidate only records the decision — the agent
+    must still teach it via ``memory_teach_skill`` with source_urls (the
+    ADR-0002 anti-hallucination gate; distill evidence ids are dialogue
+    ids, not URLs).
+    """
+    pending = getattr(skill, "pending_store", None)
+    if pending is None:
+        return {"error": "pending_store not available (tree disabled?)"}
+    candidate_id = args.get("candidate_id", "")
+    status = args.get("status", "")
+    if not candidate_id.strip():
+        return {"error": "candidate_id is required"}
+    if status not in ("accepted", "rejected"):
+        return {"error": f"status must be 'accepted' or 'rejected', got {status!r}"}
+
+    cand = None
+    for c in pending.list_open(limit=100):
+        if c.candidate_id == candidate_id.strip():
+            cand = c
+            break
+    if cand is None:
+        return {"error": "candidate not found or already closed"}
+    if not pending.mark(candidate_id.strip(), status):
+        return {"status": "not_found_or_already_closed",
+                "candidate_id": candidate_id.strip()}
+
+    promoted: str | None = None
+    if status == "accepted" and cand.suggested in ("conclusion", "pref", "pers"):
+        try:
+            from memory_skill.memory_extract import _ingest_structured
+            result = _ingest_structured(
+                skill, cand.topic, cand.summary, cand.suggested,
+            )
+            promoted = getattr(result, "entry_id", None) or cand.suggested
+        except Exception as exc:
+            return {"status": "marked",
+                    "candidate_id": candidate_id.strip(),
+                    "promotion_error": f"{type(exc).__name__}: {exc}"}
+
+    extra: dict[str, Any] = {}
+    if promoted:
+        extra["promoted_to"] = promoted
+    if status == "accepted" and cand.suggested == "skill":
+        extra["note"] = "已接受但需 memory_teach_skill(带 source_urls) 转正"
+    return {"status": "marked",
+            "candidate_id": candidate_id.strip(),
+            **extra}
 
 
 # ── Dispatch map ───────────────────────────────────────────────────────
@@ -232,5 +384,9 @@ DISPATCH = {
     "memory_update_skill": handle_update_skill,
     "memory_classify": handle_classify,
     "memory_learning_queue": handle_learning_queue,
+    "memory_learning_mark": handle_learning_mark,
+    "memory_distill": handle_distill,
+    "memory_pending": handle_pending,
+    "memory_pending_mark": handle_pending_mark,
     "memory_conclusions": handle_conclusions,
 }

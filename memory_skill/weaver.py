@@ -67,6 +67,7 @@ class WeaverStores:
     emotion_outcomes: list[dict]
     tree: TreeManagerProtocol | None = None
     gaps: list = field(default_factory=list)
+    pending_store: object = None
 
 
 @dataclass
@@ -92,9 +93,11 @@ class WeaveContext:
     mission_context: str = ""
     pref_context: str = ""
     pers_context: str = ""
+    conclusion_context: str = ""
     gap_context: str = ""
     title_preview: str = ""
     historic_hint: str = ""
+    pending_context: str = ""
     needs_second_pass: bool = False
 
     def to_prompt_block(self) -> str:
@@ -121,8 +124,12 @@ class WeaveContext:
             parts.append(self.pref_context)
         if self.pers_context:
             parts.append(self.pers_context)
+        if self.conclusion_context:
+            parts.append(self.conclusion_context)
         if self.gap_context:
             parts.append(self.gap_context)
+        if self.pending_context:
+            parts.append(self.pending_context)
         if self.title_preview:
             parts.append(self.title_preview)
         if self.historic_hint:
@@ -198,7 +205,9 @@ def weave(
         ctx.mission_context = _build_mission_context(stores.retriever, user_message)
         ctx.pref_context = _build_pref_context(stores.retriever)
         ctx.pers_context = _build_pers_context(stores.retriever)
+        ctx.conclusion_context = _build_conclusion_context(stores.retriever)
         ctx.gap_context = _build_gap_context(stores.gaps)
+        ctx.pending_context = _build_pending_context(stores.pending_store)
         ctx.title_preview = _build_title_preview(stores.retriever)
         ctx.tree_context = _build_tree_context(stores.tree, user_message)
         ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
@@ -215,7 +224,9 @@ def weave(
     ctx.mission_context = _build_mission_context(stores.retriever, user_message)
     ctx.pref_context = _build_pref_context(stores.retriever)
     ctx.pers_context = _build_pers_context(stores.retriever)
+    ctx.conclusion_context = _build_conclusion_context(stores.retriever)
     ctx.gap_context = _build_gap_context(stores.gaps)
+    ctx.pending_context = _build_pending_context(stores.pending_store)
     ctx.tree_context = _build_tree_context(stores.tree, user_message)
     ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
     if _has_high_weight(stores.learned_store, user_message):
@@ -256,11 +267,16 @@ def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
     if not user_message:
         return ""
     try:
-        if ns:
+        if ns and ns != "default":
             envelope = retriever.retrieve(
                 user_message, limit=4, filters={"category": ns})
         else:
-            envelope = retriever.retrieve(user_message, limit=4)
+            # Isolate unclassified fragments: semantic leg searches
+            # structured memory only; BM25 leg still supplies the raw
+            # dialogue units needed for context expansion.
+            envelope = retriever.retrieve(
+                user_message, limit=4,
+                filters={"category": {"$ne": "default"}})
     except Exception as e:
         _logger.warning("Tier2 retrieval failed: %s", e)
         return ""
@@ -406,12 +422,17 @@ def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
     try:
         entries = memory.search(
             "", limit=_NUDGE_MAX_ITEMS * 3,
-            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD}})
+            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD},
+                     "category": {"$ne": "default"}})
     except Exception as e:
         _logger.debug("Nudge retrieval failed: %s", e)
         return ""
 
-    high = [e for e in entries if e.weight >= _NUDGE_WEIGHT_THRESHOLD]
+    # Isolate unclassified fragments: nudge should surface structured
+    # memory (skills/prefs/pers), not raw dialogue noise.
+    high = [e for e in entries
+            if e.weight >= _NUDGE_WEIGHT_THRESHOLD
+            and e.category != "default"]
     if not high:
         return ""
 
@@ -470,8 +491,11 @@ def _has_high_weight(memory: MemorySource, user_message: str = "") -> bool:
     try:
         entries = memory.search(
             "", limit=5,
-            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD}})
-        high = [e for e in entries if e.weight >= _NUDGE_WEIGHT_THRESHOLD]
+            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD},
+                     "category": {"$ne": "default"}})
+        high = [e for e in entries
+                if e.weight >= _NUDGE_WEIGHT_THRESHOLD
+                and e.category != "default"]
         if not high:
             return False
         if user_message.strip():
@@ -613,6 +637,23 @@ def _build_gap_context(gaps: list) -> str:
     return "\n".join(lines)
 
 
+def _build_pending_context(pending_store) -> str:
+    """Surface distill candidates awaiting agent review (fixes agent drift)."""
+    if pending_store is None:
+        return ""
+    try:
+        items = pending_store.list_open(limit=5)
+    except Exception:
+        return ""
+    if not items:
+        return ""
+    lines = ["[待审核提炼] 以下对话碎片候选待主 agent 判断是否值得沉淀："]
+    for c in items:
+        lines.append(f"  · {c.topic}（建议 {c.suggested}）"
+                     f"——memory_pending 查看证据")
+    return "\n".join(lines)
+
+
 def _build_pref_context(retriever: RetrievalSource) -> str:
     try:
         result = retriever.retrieve("all", limit=10, filters={"category": "pref"})
@@ -638,8 +679,31 @@ def _build_pers_context(retriever: RetrievalSource) -> str:
     return "[人格特征]\n  · " + latest.content
 
 
+def _build_conclusion_context(retriever: RetrievalSource) -> str:
+    """Dedicated injection channel for conclusion entries.
+
+    Conclusions (knowledge/root-cause judgments) previously shared the
+    unfiltered [近期记忆] slot and had no guaranteed exposure.  This
+    gives them their own slot, newest first.
+    """
+    try:
+        result = retriever.retrieve("all", limit=10,
+                                    filters={"category": "conclusion"})
+    except Exception:
+        return ""
+    if not result.entries:
+        return ""
+    lines = ["[历史结论]"]
+    for e in result.entries[-3:]:
+        title = e.metadata.get("title", "") if hasattr(e, "metadata") and e.metadata else ""
+        content = title if title else e.content[:60].replace("\n", " ")
+        lines.append(f"  · {content}")
+    return "\n".join(lines)
+
+
 def _build_title_preview(retriever: RetrievalSource) -> str:
-    entries = retriever.retrieve("all", limit=5)
+    entries = retriever.retrieve(
+        "all", limit=5, filters={"category": {"$ne": "default"}})
     if not entries.entries:
         return ""
     lines = ["[近期记忆]"]

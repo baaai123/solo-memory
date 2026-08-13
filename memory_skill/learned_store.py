@@ -295,6 +295,7 @@ class LearnedStore:
             results["documents"][0][0] if results.get("documents") else ""
         )
         meta = results["metadatas"][0][0] if results.get("metadatas") else {}
+        meta = meta or {}  # chroma may return None for an entry's metadata
         weight = float(meta.get("weight", 0.5))
 
         # Cosine space: distance = 1 - similarity.  A duplicate is a small
@@ -365,6 +366,54 @@ class LearnedStore:
         for eid, meta in zip(result.get("ids", []), result.get("metadatas", [])):
             weights[eid] = float(meta.get("weight", 0.5)) if meta else 0.5
         return weights
+
+    def list_by_category(self, category: str, limit: int = 10,
+                         sort_by: str = "created_at",
+                         descending: bool = True) -> list[MemoryEntry]:
+        """Return entries of a given category, newest first by default.
+
+        Queries ChromaDB metadata directly (NOT semantic search), so the
+        result is complete and accurate for the category.  ``limit=0``
+        returns all matching entries (use sparingly).
+
+        Parameters
+        ----------
+        category:
+            The metadata ``category`` value to filter on (e.g. ``"conclusion"``).
+        limit:
+            Maximum number of entries to return. ``0`` means no limit.
+        sort_by:
+            Metadata field to sort on: ``"created_at"`` or ``"updated_at"``.
+        descending:
+            ``True`` = newest first.
+
+        Returns
+        -------
+        list[MemoryEntry]
+            Matching entries (empty on storage error).
+        """
+        try:
+            result = self._collection.get(
+                where={"category": category},
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            logger.warning("LearnedStore.list_by_category: get failed for %r", category)
+            return []
+
+        entries: list[MemoryEntry] = []
+        ids = result.get("ids", [])
+        documents = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
+        for i, eid in enumerate(ids):
+            doc = documents[i] if i < len(documents) else None
+            meta = metadatas[i] if i < len(metadatas) else {}
+            entries.append(self._chroma_meta_to_entry(eid, doc, meta or {}))
+
+        key = "updated_at" if sort_by == "updated_at" else "created_at"
+        entries.sort(key=lambda e: getattr(e, key).timestamp() if getattr(e, key) else 0.0,
+                     reverse=descending)
+        return entries if limit <= 0 else entries[:limit]
 
     def set_weight(self, entry_id: str, weight: float) -> None:
         """Update the weight metadata for a memory entry.
@@ -461,10 +510,22 @@ class LearnedStore:
             n_results=limit,
         )
         if filters:
-            kwargs["where"] = filters
+            kwargs["where"] = self._normalise_where(filters)
 
         results = self._collection.query(**kwargs)
         return self._parse_query_results(results)
+
+    @staticmethod
+    def _normalise_where(filters: dict[str, Any]) -> dict[str, Any]:
+        """Normalise a filter dict into a ChromaDB-compatible ``where``.
+
+        ChromaDB rejects a top-level dict with more than one operator key
+        (e.g. ``{"weight": ..., "category": ...}``) — multiple conditions
+        must be wrapped in ``$and``.
+        """
+        if len(filters) <= 1:
+            return filters
+        return {"$and": [{k: v} for k, v in filters.items()]}
 
     def _enforce_max_entries(self) -> None:
         """Evict oldest entries if collection exceeds config.max_learned_entries."""

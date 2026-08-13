@@ -306,6 +306,96 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "memory_learning_mark",
+        "description": (
+            "Mark a learning-queue item as done or skipped (e.g. a completed "
+            "mission). Missions are never auto-closed — the agent closes them "
+            "explicitly after decomposition/execution. Pass the item id from "
+            "memory_learning_queue."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string",
+                    "description": "The learning-queue item id (lq_...).",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "'done' (default) or 'skipped'.",
+                    "enum": ["done", "skipped"],
+                },
+            },
+            "required": ["item_id"],
+        },
+    },
+    {
+        "name": "memory_distill",
+        "description": (
+            "Turn dialogue fragments into reviewable candidate cards "
+            "(topic/summary/evidence/suggested). Pure decision-support — "
+            "nothing is promoted; review via memory_pending. Walks history "
+            "window by window: offset=0 is newest 60 turns, pass offset=60 "
+            "to reach older memories."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_days": {
+                    "type": "integer",
+                    "description": "Look back this many days (default 7).",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip this many newest turns (default 0).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Window size per call (default 60).",
+                },
+            },
+        },
+    },
+    {
+        "name": "memory_pending",
+        "description": (
+            "List open distill candidates awaiting agent review. After "
+            "reviewing, accept or reject via memory_pending_mark; promote "
+            "valuable content with memory_teach_skill (skills)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max candidates to return (default 20).",
+                },
+            },
+        },
+    },
+    {
+        "name": "memory_pending_mark",
+        "description": (
+            "Accept or reject a distill candidate. Accepted candidates must "
+            "still be promoted by the agent (teach_skill / structured ingest); "
+            "this only records the review decision."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "candidate_id": {
+                    "type": "string",
+                    "description": "Candidate id from memory_pending (dc_...).",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["accepted", "rejected"],
+                },
+            },
+            "required": ["candidate_id", "status"],
+        },
+    },
+    {
         "name": "memory_conclusions",
         "description": (
             "List reusable conclusion entries extracted from assistant replies "

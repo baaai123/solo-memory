@@ -192,17 +192,25 @@ class Ingestor:
             meta.update(extra_metadata)
 
         if dup:
-            # Merge: update content, bump weight, refresh timestamp
-            new_weight = dup["weight"] + 0.05
-            self._learned_store.update(
-                dup["entry_id"],
-                content=turn.content,
-                metadata={"weight": new_weight},
-            )
-            deduped = True
-            entry_id = dup["entry_id"]
-            weight = new_weight
-        else:
+            try:
+                # Merge: update content, bump weight, refresh timestamp
+                new_weight = dup["weight"] + 0.05
+                self._learned_store.update(
+                    dup["entry_id"],
+                    content=turn.content,
+                    metadata={"weight": new_weight},
+                )
+                deduped = True
+                entry_id = dup["entry_id"]
+                weight = new_weight
+            except KeyError:
+                # dup referenced a stale id (entry deleted from chroma but
+                # still indexed elsewhere) — fall through to a fresh write.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Dedup target %s missing; writing fresh entry", dup["entry_id"])
+                dup = None
+        if not dup:
             # New entry with uniform weight
             entry = MemoryEntry(
                 id=entry_id,
