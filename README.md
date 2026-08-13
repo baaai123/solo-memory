@@ -4,7 +4,7 @@
 
 **为 AI Agent 打造的长期记忆插件**（中文为主，中英双语可用）— 本地优先、双模型记忆、可自我进化。
 
-为 AI Agent（Claude / OpenAI / 自研 LLM）提供持久化的长期记忆：每次对话自动存取，检索时注入相关记忆上下文，检测知识缺口后主动学习。**零 API 检索**（本地向量检索），LLM 仅用于增强（分类/合成）。
+为 AI Agent（Claude / OpenAI / 自研 LLM）提供持久化的长期记忆：每次对话自动存取，检索时注入相关记忆上下文，对话碎片经提炼后沉淀为结构化知识。**零 API 检索**（本地向量检索），**所有 LLM 决策由主 agent 完成**（模块为纯存储+检索，不越俎代庖——见 ADR-0002）。
 
 > **语言支持**：中英双语均可存取，检索信号各有侧重——中文由 BM25（jieba 分词）主导，英文由语义向量（bge-large-en-v1.5）主导。插件本身语言无关，中文/英文对话都能自动记忆。
 
@@ -14,12 +14,13 @@
 
 | 特性 | 说明 |
 |---|---|
-| **两半记忆模型** | 非结构化对话（user_mem）+ 结构化知识（pref/pers/skill/mission） |
+| **两半记忆模型** | 非结构化对话 + 结构化知识（pref/pers/skill/mission/conclusion） |
 | **自动存取** | weave 自动注入上下文；透明代理下 Agent 零改动 |
 | **主动检索** | Agent 引用记忆标题 → 自动展开为完整上下文 |
-| **主动学习** | 知识缺口检测 → 爬取 → 合成 → 验证闭环 |
+| **碎片隔离** | 未分类对话碎片不污染 weave 注入（tier2/nudge/[近期记忆] 只显示结构化记忆），碎片仍可显式搜索 |
+| **候选提炼** | distill 将对话碎片压缩为带证据的候选卡 → 主 agent 审核 → 自动转正结构化记忆 |
 | **反馈演化** | 记忆权重随使用自动演化（去重+0.05 / 引用+0.02 / 反馈+0.05） |
-| **三层注入** | tier1 场景感知 + tier2 对话片段 + nudge 高优记忆 |
+| **三层注入** | tier1 场景感知 + tier2 结构化记忆 + nudge 高优记忆 |
 | **透明接入** | MCP 工具 / OpenAI 兼容代理 / Python API 三通道 |
 
 ---
@@ -28,35 +29,41 @@
 
 ```
 ┌────────────────────────────── Agent 层 ──────────────────────────────┐
-│  MCP 工具 (7个)    透明代理 (auto_context)     Python API            │
+│  MCP 工具 (15个)   透明代理 (auto_context)     Python API             │
+│  决策权全部在主 agent：分类/拆解/教学/审核 —— 模块不越俎代庖          │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
 ┌─────────────────────────── MemorySystem ────────────────────────────┐
-│  IngestPipeline           Weaver (8区块)        RetrievalCoordinator │
-│  │  ingest_dialogue       │  tier1/tier2       │  RRF 三信号融合     │
-│  │  tag_title (LLM)       │  nudge/gap/emotion │  BM25 ×2.5          │
-│  └  extract_structured    └  树导航/skill/mission ── semantic ×0.5  │
-│                                                      temporal ×0.5   │
+│  写链 (IngestPipeline)    读链 (Weaver 10区块)     检索 (RRF)        │
+│  │  ingest_dialogue       │  tier1/tier2          │  BM25 ×2.5       │
+│  │  dedup (语义合并)      │  nudge/[历史结论]     │  semantic ×0.5   │
+│  │  碎片 → default 分类   │  skill/mission/pref/pers │  temporal ×0.5 │
+│  └  teach_skill (结构化)  └  树导航/[待审核提炼]   └                  │
 ├──────────────────────────────────────────────────────────────────────┤
-│  SQLite FTS5 (jieba 中文分词)      ChromaDB (1024-dim 向量)          │
-│  SawRingBuffer (短期观察)          TreeManager (记忆树导航)           │
-│  GapDetector → LearningDecider → WebCrawler → KnowledgeSynth         │
+│  提炼层 (distill)     审核层 (pending_store)      存储层              │
+│  碎片→候选卡(带证据)  accepted→自动转正           SQLite FTS5         │
+│  offset 窗口遍历历史   rejected→丢弃              ChromaDB (1024-dim) │
+│  只压缩不断言(防捏造)  skill 保留人工 teach        SawRingBuffer       │
+│  evidence 必须真实存在  (source_urls 铁律)         TreeManager         │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 数据流
+### 数据流（闭环）
 
 ```
 对话 → Ingestor → [SQLite 对话库] + [ChromaDB 向量库] + [记忆树]
-                      ↓                             ↓
-                    FTS5 BM25                  向量检索
-                      └────────┬──────────────────┘
-                               ↓
-                      RRF 融合 (k=60)
-                               ↓
-                     Weaver 组装 8 区块上下文
-                               ↓
-                      注入 Agent 提示词
+                      │
+                      ├── 碎片 (default 分类) ──→ distill ──→ pending 候选
+                      │                              │          │
+                      │                    [待审核提炼]提醒       ├─ accepted → 自动转正
+                      │                              │          │             ↓
+                      │                              │          └─ rejected → 丢弃
+                      │                              │                    结构化记忆
+                      │                              │                    (skill/pref/pers/
+                      │                              │                     mission/conclusion)
+                      └── 检索 (RRF k=60) ←──────────┘                     ↓
+                                          ↓                          Weaver 组装 10 区块
+                                    注入 Agent 提示词 ←────────────────────┘
 ```
 
 ### 检索信号（RRF 融合）
@@ -69,17 +76,25 @@
 
 > **语言说明**：检索是 RRF 融合——中文内容主要靠 BM25（jieba 对中文分词准确），英文内容主要靠语义向量（bge-large-en-v1.5 是英文专用模型）。两路互补：中文记忆靠 BM25 召回，英文记忆靠语义召回，均可在同库中检索。若需单模型统一中英语义检索，可替换为多语言嵌入模型（如 bge-m3，需重新嵌入历史记忆）。
 
-### 7 个 MCP 工具
+### 15 个 MCP 工具
 
 | 工具 | 用途 |
 |---|---|
-| `memory_search` | 检索记忆（RRF 融合） |
-| `memory_weave` | 注入三层记忆上下文（含自动存取） |
+| `memory_weave` | 注入分层记忆上下文（含自动存取） |
+| `memory_search` | 检索记忆（RRF 融合，碎片也可显式查） |
 | `memory_ingest` | 存储对话 |
 | `memory_status` | 健康检查 |
 | `memory_feedback` | 反馈权重演化 |
-| `memory_gaps` | 查看知识缺口 |
-| `memory_learn` | 爬取学习闭环 |
+| `memory_classify` | 分类对话（chat/skill/mission/pref/pers）——协议门控要求每轮调用 |
+| `memory_check_skill` | 检查技能是否已掌握（known/partial/unknown） |
+| `memory_teach_skill` | 教学写入（强制 source_urls 防捏造） |
+| `memory_update_skill` | 更新技能 |
+| `memory_learning_queue` | 查看学习队列（待学习/待拆解） |
+| `memory_learning_mark` | 关闭学习队列条目 |
+| `memory_distill` | 提炼对话碎片为候选卡（offset 遍历历史） |
+| `memory_pending` | 查看待审核候选 |
+| `memory_pending_mark` | 确认/拒绝候选（accepted 自动转正） |
+| `memory_conclusions` | 查询结论条目 |
 
 ---
 
@@ -233,9 +248,9 @@ AFTER 重要交互:      memory_ingest(role, content) → 存入记忆
 重启 Agent 会话，让 Agent 调用记忆工具：
 
 ```
-# Agent 应能看到并调用这些工具：
+# Agent 应能看到并调用这些工具（15 个，核心 5 个）：
 memory_search / memory_weave / memory_ingest / memory_status
-memory_feedback / memory_gaps / memory_learn
+memory_feedback / memory_classify / memory_teach_skill / memory_distill
 ```
 
 **快速验证**：让 Agent 说一句重要信息（如"我偏好用 Python 写后端"），重启会话后再问它——如果它还记得，说明记忆已生效。
@@ -303,9 +318,42 @@ print(ctx.to_prompt_block())
 # 主动检索
 skill.expand("FastAPI")
 
-# 主动学习
-skill.learn("Docker", ["https://docs.docker.com/..."])
+# 提炼候选（对话碎片 → 待审核候选）
+skill.distill()   # 或 MCP: memory_distill
+
+# 查看/审核候选
+skill.pending()   # 或 MCP: memory_pending / memory_pending_mark
 ```
+
+---
+
+## 提炼与审核（主动学习 v2）
+
+08-11 重写后，记忆模块为纯存储+检索，**所有学习决策由主 agent 完成**（ADR-0002）。主动学习闭环变为：
+
+```
+对话碎片 ── memory_distill ──→ 候选卡 (topic/summary/evidence/suggested)
+                                   │  evidence 必须引用真实对话 id（防捏造）
+                                   │  只压缩不断言，suggested 只是建议
+                                   ↓
+                              pending_store (SQLite，不进检索库)
+                                   │
+                    weave 注入 [待审核提炼] 提醒（每轮可见）
+                                   ↓
+                          主 agent 审核 (memory_pending)
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ↓                    ↓                    ↓
+        accepted              rejected            skill 候选
+        (conclusion/pref/pers)   → 丢弃              → 保留人工 teach
+        自动转正入库                                (source_urls 铁律)
+```
+
+**关键设计（防捏造防线）：**
+- `distill` 只总结已有对话，绝不新增事实；每条 `evidence` 必须是真实存在的 dialogue id，否则候选被拒收
+- 候选存独立 `pending_store`，**不参与检索**——审核前不会污染 weave
+- skill 候选不自动转正：`teach_skill` 强制 `source_urls` 非空（ADR-0002 防止主 agent 凭训练数据捏造）
+- `memory_distill` 支持 `offset/limit` 窗口遍历历史——**旧记忆也能被提炼**，不只是最新对话
 
 ---
 
@@ -313,7 +361,7 @@ skill.learn("Docker", ["https://docs.docker.com/..."])
 
 | 文档 | 内容 |
 |---|---|
-| [SKILL.md](SKILL.md) | Agent 使用协议（8 区块 weave） |
+| [SKILL.md](SKILL.md) | Agent 使用协议（分层 weave 注入 + 提炼闭环） |
 | [COMPREHENSIVE.md](COMPREHENSIVE.md) | 完整架构设计 |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | OpenCode / Cursor / 代理接入指南 |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | 记忆协议与工具规范 |
@@ -327,7 +375,7 @@ skill.learn("Docker", ["https://docs.docker.com/..."])
 |---|---|
 | 中文检索精度 | 93%（300 条记忆） |
 | 检索延迟 | 35-100ms |
-| 测试 | 46 快速（0.07s 纯内存）+ 65 集成 |
+| 测试 | 115 快速/集成（25 network/slow 需真实 API key 时运行） |
 
 ---
 

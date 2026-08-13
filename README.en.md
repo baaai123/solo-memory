@@ -14,12 +14,13 @@ Gives AI Agents (Claude / OpenAI / your own LLM) persistent long-term memory: ev
 
 | Feature | Description |
 |---|---|
-| **Two-Half Memory Model** | Unstructured dialogue (user_mem) + structured knowledge (pref/pers/skill/mission) |
+| **Two-Half Memory Model** | Unstructured dialogue + structured knowledge (pref/pers/skill/mission/conclusion) |
 | **Automatic Read/Write** | `weave` injects context automatically; zero agent changes under the transparent proxy |
 | **Proactive Retrieval** | Agent references a memory title → auto-expands into full context |
-| **Self-Directed Learning** | Knowledge-gap detection → crawl → synthesize → verify closed loop |
+| **Fragment Isolation** | Unclassified fragments never pollute weave injection (tier2/nudge/[近期记忆] show structured memory only); fragments stay explicit-searchable |
+| **Candidate Distillation** | `distill` compresses dialogue fragments into evidence-backed candidate cards → main agent reviews → auto-promotes to structured memory |
 | **Feedback-Driven Evolution** | Memory weights evolve with usage (dedup +0.05 / reference +0.02 / feedback +0.05) |
-| **Three-Tier Injection** | tier1 scenario awareness + tier2 dialogue snippets + nudge high-priority memories |
+| **Three-Tier Injection** | tier1 scenario awareness + tier2 structured memory + nudge high-priority memories |
 | **Transparent Integration** | MCP tools / OpenAI-compatible proxy / Python API — three channels |
 
 ---
@@ -28,35 +29,41 @@ Gives AI Agents (Claude / OpenAI / your own LLM) persistent long-term memory: ev
 
 ```
 ┌────────────────────────────── Agent Layer ─────────────────────────────┐
-│  MCP Tools (7)   Transparent Proxy (auto_context)   Python API         │
+│  MCP Tools (15)  Transparent Proxy (auto_context)   Python API          │
+│  ALL decisions owned by main agent: classify/decompose/teach/review    │
 └──────────────────────────────┬────────────────────────────────────────┘
                                │
 ┌─────────────────────────── MemorySystem ───────────────────────────────┐
-│  IngestPipeline           Weaver (8 blocks)        RetrievalCoordinator│
-│  │  ingest_dialogue       │  tier1/tier2          │  RRF 3-signal fusion│
-│  │  tag_title (LLM)       │  nudge/gap/emotion    │  BM25 ×2.5          │
-│  └  extract_structured    └  tree-nav/skill/mission ── semantic ×0.5   │
-│                                                      temporal ×0.5      │
+│  Write (IngestPipeline)   Read (Weaver 10 blocks)    Retrieval (RRF)   │
+│  │  ingest_dialogue       │  tier1/tier2            │  BM25 ×2.5       │
+│  │  dedup (semantic)      │  nudge/[历史结论]       │  semantic ×0.5   │
+│  │  fragments → default   │  skill/mission/pref/pers│  temporal ×0.5   │
+│  └  teach_skill (structured) └  tree-nav/[待审核提炼]└                  │
 ├────────────────────────────────────────────────────────────────────────┤
-│  SQLite FTS5 (jieba Chinese tokenization)      ChromaDB (1024-dim vec) │
-│  SawRingBuffer (short-term observation)        TreeManager (memory nav)│
-│  GapDetector → LearningDecider → WebCrawler → KnowledgeSynth           │
+│  Distill layer       Review layer (pending_store)   Storage            │
+│  fragments→candidate  accepted→auto-promote         SQLite FTS5        │
+│  offset window walk   rejected→discard              ChromaDB (1024-dim)│
+│  compress-only        skill→manual teach            SawRingBuffer       │
+│  evidence must exist  (source_urls gate)            TreeManager         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow
+### Data Flow (closed loop)
 
 ```
 conversation → Ingestor → [SQLite dialogue store] + [ChromaDB vector store] + [memory tree]
-                      ↓                             ↓
-                    FTS5 BM25                  vector search
-                      └────────┬──────────────────┘
-                               ↓
-                      RRF fusion (k=60)
-                               ↓
-                     Weaver assembles 8-block context
-                               ↓
-                     Injected into agent prompt
+                      │
+                      ├── fragments (default) ──→ distill ──→ pending candidates
+                      │                              │            │
+                      │                    [待审核提炼] reminder    ├─ accepted → auto-promote
+                      │                              │            │              ↓
+                      │                              │            └─ rejected → discard
+                      │                              │                     structured memory
+                      │                              │                    (skill/pref/pers/
+                      │                              │                     mission/conclusion)
+                      └── retrieval (RRF k=60) ←─────┘                     ↓
+                                          ↓                        Weaver assembles 10 blocks
+                                    Injected into agent prompt ←─────────────┘
 ```
 
 ### Retrieval Signals (RRF Fusion)
@@ -69,17 +76,25 @@ conversation → Ingestor → [SQLite dialogue store] + [ChromaDB vector store] 
 
 > **A note on languages**: Retrieval is RRF fusion — Chinese content is recalled primarily by BM25 (jieba tokenizes Chinese accurately), English content primarily by semantic vectors (bge-large-en-v1.5 is an English-specific model). The two paths are complementary: Chinese memories are recalled via BM25, English memories via semantic recall, both searchable in the same store. If you want a single model for unified bilingual semantic retrieval, swap in a multilingual embedding model (e.g. bge-m3) — this requires re-embedding existing memories.
 
-### The 7 MCP Tools
+### The 15 MCP Tools
 
 | Tool | Purpose |
 |---|---|
-| `memory_search` | Search memories (RRF fusion) |
-| `memory_weave` | Inject three-tier memory context (includes automatic read/write) |
+| `memory_weave` | Inject layered memory context (includes automatic read/write) |
+| `memory_search` | Search memories (RRF fusion; fragments also explicit-searchable) |
 | `memory_ingest` | Store a conversation |
 | `memory_status` | Health check |
 | `memory_feedback` | Feedback-driven weight evolution |
-| `memory_gaps` | Inspect knowledge gaps |
-| `memory_learn` | Crawl-learn closed loop |
+| `memory_classify` | Classify a turn (chat/skill/mission/pref/pers) — protocol gate requires it |
+| `memory_check_skill` | Check whether a skill is known (known/partial/unknown) |
+| `memory_teach_skill` | Teach a skill (source_urls required — anti-hallucination) |
+| `memory_update_skill` | Update a skill |
+| `memory_learning_queue` | View learning queue (to-learn/to-decompose) |
+| `memory_learning_mark` | Close a learning-queue item |
+| `memory_distill` | Distill dialogue fragments into candidate cards (offset walks history) |
+| `memory_pending` | View pending candidates awaiting review |
+| `memory_pending_mark` | Accept/reject a candidate (accepted auto-promotes) |
+| `memory_conclusions` | Query conclusion entries |
 
 ---
 
@@ -236,7 +251,7 @@ Restart the Agent session so it picks up the memory tools:
 ```
 # The Agent should now see and be able to call these tools:
 memory_search / memory_weave / memory_ingest / memory_status
-memory_feedback / memory_gaps / memory_learn
+memory_feedback / memory_classify / memory_teach_skill / memory_distill
 ```
 
 **Quick check**: tell the Agent something important (e.g. "I prefer Python for backend work"), restart the session, then ask it again — if it remembers, the memory is working.
@@ -304,9 +319,48 @@ print(ctx.to_prompt_block())
 # Proactive retrieval
 skill.expand("FastAPI")
 
-# Self-directed learning
-skill.learn("Docker", ["https://docs.docker.com/..."])
+# Distill fragments → pending candidates
+skill.distill()   # or MCP: memory_distill
+
+# View / review candidates
+skill.pending()   # or MCP: memory_pending / memory_pending_mark
 ```
+
+---
+
+## Distillation & Review (Active Learning v2)
+
+Since the 08-11 rewrite the module is pure storage + retrieval — **all learning
+decisions are owned by the main agent** (ADR-0002). The active-learning loop:
+
+```
+fragments ── memory_distill ──→ candidate cards (topic/summary/evidence/suggested)
+                                   │  evidence must reference real dialogue ids (anti-hallucination)
+                                   │  compress-only, never asserts; suggested is advisory
+                                   ↓
+                              pending_store (SQLite, outside retrieval pool)
+                                   │
+                    weave injects [待审核提炼] reminder (visible every turn)
+                                   ↓
+                          main agent reviews (memory_pending)
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ↓                    ↓                    ↓
+        accepted              rejected            skill candidates
+        (conclusion/pref/pers)   → discard           → manual teach
+        auto-promotes                                (source_urls gate)
+```
+
+**Anti-hallucination design:**
+- `distill` only summarizes existing dialogue, never adds facts; every
+  `evidence` id must resolve to a real dialogue turn or the candidate is
+  rejected at write time
+- candidates live in the isolated `pending_store` — they never enter
+  retrieval, so they cannot pollute weave before review
+- skill candidates are NOT auto-promoted: `teach_skill` requires non-empty
+  `source_urls` (ADR-0002, prevents fabricating from training data)
+- `memory_distill` supports `offset/limit` window walking — **old memories
+  get distilled too**, not just the newest turns
 
 ---
 
@@ -314,7 +368,7 @@ skill.learn("Docker", ["https://docs.docker.com/..."])
 
 | Doc | Contents |
 |---|---|
-| [SKILL.md](SKILL.md) | Agent usage protocol (8-block weave) |
+| [SKILL.md](SKILL.md) | Agent usage protocol (layered weave injection + distillation loop) |
 | [COMPREHENSIVE.md](COMPREHENSIVE.md) | Full architecture design |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | OpenCode / Cursor / proxy integration guide |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Memory protocol & tool specs |
@@ -330,7 +384,7 @@ skill.learn("Docker", ["https://docs.docker.com/..."])
 |---|---|
 | Chinese retrieval accuracy | 93% (300 memories) |
 | Retrieval latency | 35-100ms |
-| Tests | 46 fast (0.07s pure in-memory) + 65 integration |
+| Tests | 115 fast/integration (25 network/slow run when real API keys present) |
 
 ---
 
