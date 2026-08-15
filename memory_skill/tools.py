@@ -15,26 +15,29 @@ logger = logging.getLogger("memory_skill.tools")
 
 # ── Lazy helpers (module-level singletons) ────────────────────────────
 
-_registry = None
-_writer = None
+# Per-instance caches (WeakKeyDictionary so skills can be GC'd).
+from weakref import WeakKeyDictionary
+
+_registries: WeakKeyDictionary = WeakKeyDictionary()
+_writers: WeakKeyDictionary = WeakKeyDictionary()
 
 
 def _get_registry(skill):
-    global _registry
-    if _registry is None:
+    # Per-instance cache so multiple MemorySystem instances (test dbs, room
+    # agents) never share one registry bound to the first skill's tree.
+    if skill not in _registries:
         from memory_skill.capability_registry import CapabilityRegistry
         from memory_skill.skill_registry import SkillRegistry
         capability = CapabilityRegistry(skill.tree, skill.retriever)
-        _registry = SkillRegistry(skill.retriever, capability)
-    return _registry
+        _registries[skill] = SkillRegistry(skill.retriever, capability)
+    return _registries[skill]
 
 
 def _get_writer(skill):
-    global _writer
-    if _writer is None:
+    if skill not in _writers:
         from memory_skill.skill_writer import SkillWriter
-        _writer = SkillWriter(skill)
-    return _writer
+        _writers[skill] = SkillWriter(skill)
+    return _writers[skill]
 
 
 # ── Handler functions ─────────────────────────────────────────────────
@@ -73,6 +76,8 @@ def handle_search(skill, args: dict[str, Any]) -> dict[str, Any]:
     query = args.get("query", "")
     if not query.strip():
         return {"error": "query is required"}
+    # A mission that searches memory has checked for existing knowledge.
+    skill.protocol.mark_skill_checked()
     try:
         result = skill.retrieve(query, limit=args.get("limit", 10))
         return {
@@ -140,6 +145,8 @@ def handle_check_skill(skill, args: dict[str, Any]) -> dict[str, Any]:
     skill_name = args.get("skill_name", "")
     if not skill_name.strip():
         return {"error": "skill_name is required"}
+    # Checking existing skills satisfies the mission gate.
+    skill.protocol.mark_skill_checked()
     try:
         return _get_registry(skill).check_skill(skill_name)
     except Exception as exc:
@@ -170,11 +177,7 @@ def handle_classify(skill, args: dict[str, Any]) -> dict[str, Any]:
     category = args.get("category", "chat")
     note = args.get("note", "")
     gaps = args.get("gaps")
-    skill._classify_pending = None
-    if category == "mission" and gaps:
-        skill._pending_gaps = set(g.strip() for g in gaps if g.strip())
-    else:
-        skill._pending_gaps.clear()
+    skill.protocol.mark_classified(category, gaps)
     _enqueue_if_learning(skill, category, note, gaps)
     return {"status": "classified", "category": category, "note": note}
 
@@ -389,4 +392,70 @@ DISPATCH = {
     "memory_pending": handle_pending,
     "memory_pending_mark": handle_pending_mark,
     "memory_conclusions": handle_conclusions,
+}
+
+# ── Tool schemas (single source of truth) ────────────────────────
+# Each tool's MCP schema lives next to its handler. mcp_tools.TOOLS
+# is derived from this map so adding a tool means editing ONE place.
+TOOL_SCHEMAS: dict[str, dict] = {
+    "memory_check_skill": {
+        "description": "Check whether a skill is already known to memory (scoped to the skill category). Returns 'known' | 'partial' | 'unknown' with matching skill entries. Use BEFORE learning a new topic \u2014 if known, reuse or update the existing skill instead of re-learning.",
+        "inputSchema": {"type": "object", "properties": {"skill_name": {"type": "string", "description": "The skill name to check, e.g. 'Docker Compose'."}}, "required": ["skill_name"]},
+    },
+    "memory_classify": {
+        "description": "Classify the current user message. REQUIRED after every memory_weave call \u2014 the next weave() is rejected until classification is done. Pass gaps when category='mission': system blocks weave until all gaps are taught.",
+        "inputSchema": {"type": "object", "properties": {"category": {"type": "string", "description": "Classification: 'chat' | 'skill' | 'mission' | 'pref' | 'pers'", "enum": ["chat", "skill", "mission", "pref", "pers"]}, "note": {"type": "string", "description": "Optional note: skill name, mission summary, etc."}, "gaps": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}], "description": "Required skill names for a mission (blocks weave until taught)"}}, "required": ["category"]},
+    },
+    "memory_conclusions": {
+        "description": "List reusable conclusion entries extracted from assistant replies (category=conclusion, title + summary + evidence format). Queries the store directly by category \u2014 NOT semantic search \u2014 so the result is complete and accurate. Use to verify what conclusions the memory system has distilled.",
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10, "description": "Max conclusions to return (newest first)."}}},
+    },
+    "memory_distill": {
+        "description": "Turn dialogue fragments into reviewable candidate cards (topic/summary/evidence/suggested). Pure decision-support \u2014 nothing is promoted; review via memory_pending. Walks history window by window: offset=0 is newest 60 turns, pass offset=60 to reach older memories.",
+        "inputSchema": {"type": "object", "properties": {"since_days": {"type": "integer", "description": "Look back this many days (default 7)."}, "offset": {"type": "integer", "description": "Skip this many newest turns (default 0)."}, "limit": {"type": "integer", "description": "Window size per call (default 60)."}}},
+    },
+    "memory_feedback": {
+        "description": "Record feedback on a previous memory_search result. Provide the query_id from the search response, the outcome ('positive', 'negative', 'neutral', or 'auto' for automatic detection), and the list of memory IDs you cited or found useful. To enable auto-detection, also pass search_results and final_response. This boosts the weights of cited memories to improve future retrieval.\n\n",
+        "inputSchema": {"type": "object", "properties": {"query_id": {"type": "string", "description": "The query_id from a previous memory_search response. Used to correlate feedback with the search."}, "outcome": {"type": "string", "description": "How useful the search results were: 'positive' (found what I needed), 'negative' (results were irrelevant), 'neutral' (mixed or unsure), or 'auto' (let the system auto-detect).", "enum": ["positive", "negative", "neutral", "auto"]}, "cited_ids": {"type": "array", "description": "List of memory entry IDs from the search results that you used or cited in your response.", "items": {"type": "string"}}, "search_results": {"type": "array", "description": "Optional: the search results from the previous memory_search call (for auto-detection). Each item should have 'id' and 'content' fields.", "items": {"type": "object"}}, "final_response": {"type": "string", "description": "Optional: the final response the agent produced using the search results (for auto-detection)."}}, "required": ["query_id"]},
+    },
+    "memory_ingest": {
+        "description": "Save a dialogue turn into the memory system for future retrieval. Call this after significant interactions \u2014 user questions, important answers, decisions made, facts learned. Each turn is indexed for both semantic search and full-text retrieval.\n\n",
+        "inputSchema": {"type": "object", "properties": {"content": {"type": "string", "description": "The content to save \u2014 typically the user's question or your response that should be remembered."}, "role": {"type": "string", "default": "user", "description": "Speaker role: 'user', 'assistant', or 'system'.", "enum": ["user", "assistant", "system"]}}, "required": ["content"]},
+    },
+    "memory_learning_mark": {
+        "description": "Mark a learning-queue item as done or skipped (e.g. a completed mission). Missions are never auto-closed \u2014 the agent closes them explicitly after decomposition/execution. Pass the item id from memory_learning_queue.",
+        "inputSchema": {"type": "object", "properties": {"item_id": {"type": "string", "description": "The learning-queue item id (lq_...)."}, "status": {"type": "string", "description": "'done' (default) or 'skipped'.", "enum": ["done", "skipped"]}}, "required": ["item_id"]},
+    },
+    "memory_learning_queue": {
+        "description": "List pending learning items: skills the classifier flagged as not-yet-mastered and missions awaiting decomposition. Open items are rendered by weave as [\u5f85\u5b66\u4e60]/[\u5f85\u62c6\u89e3] directives \u2014 act on them and confirm results with the user.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "memory_pending": {
+        "description": "List open distill candidates awaiting agent review. After reviewing, accept or reject via memory_pending_mark; promote valuable content with memory_teach_skill (skills).",
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "Max candidates to return (default 20)."}}},
+    },
+    "memory_pending_mark": {
+        "description": "Accept or reject a distill candidate. Accepted candidates must still be promoted by the agent (teach_skill / structured ingest); this only records the review decision.",
+        "inputSchema": {"type": "object", "properties": {"candidate_id": {"type": "string", "description": "Candidate id from memory_pending (dc_...)."}, "status": {"type": "string", "enum": ["accepted", "rejected"]}}, "required": ["candidate_id", "status"]},
+    },
+    "memory_search": {
+        "description": "Search agent memory for relevant past conversations and learned knowledge. Returns ranked results with content, relevance scores, and memory IDs. Use this BEFORE responding to any question about past events, user preferences, or previously discussed topics.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Natural language search query. Be specific \u2014 include names, topics, dates for best results."}, "limit": {"type": "integer", "default": 10, "description": "Maximum number of results to return (1-100).", "minimum": 1, "maximum": 100}}, "required": ["query"]},
+    },
+    "memory_status": {
+        "description": "Get a health summary of the memory system: entry counts, embedder status, and configuration. Call this on first wake-up to understand the memory system state.\n\n",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "memory_teach_skill": {
+        "description": "Persist a taught skill at high confidence. Use AFTER learning a topic (via web search or user instruction): pass the skill title and the learned content. Returns the stored entry_id. The user may later correct it via memory_update_skill.",
+        "inputSchema": {"type": "object", "properties": {"title": {"type": "string", "description": "Skill title, e.g. 'Docker Compose \u591a\u5bb9\u5668\u90e8\u7f72'."}, "content": {"type": "string", "description": "The learned knowledge (markdown ok)."}, "source_urls": {"type": "array", "description": "Source URLs used for learning \u2014 required, teaching must be backed by external references, not guesswork.", "items": {"type": "string"}}}, "required": ["title", "content", "source_urls"]},
+    },
+    "memory_update_skill": {
+        "description": "Rewrite a skill entry's content \u2014 a correction from the user or the agent after learning. Directly replaces the stored content (not a semantic merge), so skills stay writable for teaching.",
+        "inputSchema": {"type": "object", "properties": {"entry_id": {"type": "string", "description": "The skill entry id to update."}, "content": {"type": "string", "description": "The corrected skill content (markdown ok)."}}, "required": ["entry_id", "content"]},
+    },
+    "memory_weave": {
+        "description": "Auto-assemble layered memory context for the current conversation. Call BEFORE responding to any user message. Returns a context block ready for system-prompt injection. tier1: scene perception, tier2: deep memory (gated), nudge: high-importance reminders.\n\nV10: Both user_message AND assistant_content are auto-ingested (ImportanceScorer filters trivial content). This mirrors the Room framework's conversation-block pattern where both sides of every exchange are persisted without manual ingest calls.",
+        "inputSchema": {"type": "object", "properties": {"user_message": {"type": "string", "description": "The user's current message."}, "assistant_content": {"type": "string", "description": "Optional: your OWN response from the PREVIOUS exchange. Auto-ingested into memory so both sides of every conversation block are persisted. Pass your full last response."}, "scene_summary": {"type": "string", "description": "Optional: what the user is doing now."}}},
+    },
 }

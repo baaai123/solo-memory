@@ -109,6 +109,40 @@ class TestFastWeave:
         ctx = ms.weave("second", scene_summary="")
         assert ctx.time_context
 
+    def test_weave_blocks_mission_until_skill_check(self):
+        from memory_skill._compose import SkillCheckRequired
+        from memory_skill.tools import handle_check_skill, handle_classify, handle_search
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        # Classify as a mission (no declared gaps) -> mission gate is armed.
+        handle_classify(ms, {"category": "mission", "note": "build a plugin", "gaps": []})
+        assert ms._mission_pending_check is True
+        with pytest.raises(SkillCheckRequired):
+            ms.weave("let's start implementing", scene_summary="")
+
+        # memory_check_skill satisfies the gate.
+        ms._classify_pending = None
+        handle_check_skill(ms, {"skill_name": "dsh plugin"})
+        assert ms._mission_pending_check is False
+        ms.weave("start", scene_summary="")
+
+        # memory_search also satisfies the gate.
+        handle_classify(ms, {"category": "mission", "note": "build another", "gaps": []})
+        assert ms._mission_pending_check is True
+        ms._classify_pending = None
+        handle_search(ms, {"query": "plugin"})
+        assert ms._mission_pending_check is False
+        ms.weave("start again", scene_summary="")
+
+    def test_classify_non_mission_clears_mission_gate(self):
+        from memory_skill.tools import handle_classify
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        handle_classify(ms, {"category": "mission", "note": "mission", "gaps": []})
+        assert ms._mission_pending_check is True
+        handle_classify(ms, {"category": "chat", "note": "just chatting"})
+        assert ms._mission_pending_check is False
+
     def test_tier2_isolates_default_fragments(self):
         """tier2 excludes unclassified fragments; structured skill ranks."""
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
@@ -243,6 +277,28 @@ class TestFastLearning:
         block = ctx.to_prompt_block()
         assert "先 websearch" in block
         assert "Docker Compose" in block
+
+    def test_prompt_block_renders_directives_first(self):
+        """Directives render at the top in a marked block, before background memory."""
+        from tests.fakes import FakeLearningQueue
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        queue = FakeLearningQueue()
+        ms.learning_queue = queue
+        ms.ingestor._learning_queue = queue
+        ms._classify_pending = None
+        queue.enqueue("skill", "Docker Compose", "需要掌握")
+        queue.enqueue("mission", "build a plugin", "未拆解")
+
+        ctx = ms.weave(user_message="学什么", scene_summary="")
+        block = ctx.to_prompt_block()
+
+        # Directive block opener comes first, and both directive kinds are inside it.
+        assert block.index("═══ 必须执行指令") < block.index("Docker Compose")
+        assert "⚠ 上述指令由协议硬门强制执行" in block
+        assert block.index("Docker Compose") < block.index("═══ 指令区结束")
+        # The directive block is followed by background memory sections.
+        assert block.index("═══ 指令区结束") < block.index("时间") or "时间" in block
 
     def test_classify_enqueues_skill_and_mission(self):
         from memory_skill.tools import handle_classify, handle_learning_queue

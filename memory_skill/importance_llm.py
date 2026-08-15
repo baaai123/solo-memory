@@ -31,7 +31,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
 
 # ── Logger ──────────────────────────────────────────────────────────────────────
 
@@ -80,7 +79,6 @@ Importance:"""
 # ── Module-level lazy-init state ────────────────────────────────────────────────
 
 _env_loaded: bool = False
-_client: Any = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -130,33 +128,6 @@ def _get_env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
-def _get_client() -> Any:
-    """Return a cached OpenAI client, creating it lazily on first call.
-
-    Follows the same singleton pattern as ``feedback._get_llm()``.
-    """
-    global _client
-
-    if _client is not None:
-        return _client
-
-    import openai
-
-    api_base = _get_env("IMPORTANCE_API_BASE", _DEFAULT_API_BASE)
-    api_key = _get_env("IMPORTANCE_API_KEY", _DEFAULT_API_KEY)
-    timeout_val = float(_get_env("IMPORTANCE_TIMEOUT", _DEFAULT_TIMEOUT))
-
-    _log.debug("Creating OpenAI client: base=%s key=%s timeout=%.0fs",
-               api_base, _mask_key(api_key), timeout_val)
-
-    _client = openai.OpenAI(
-        base_url=api_base,
-        api_key=api_key,
-        timeout=timeout_val,
-    )
-    return _client
-
-
 def _sanitise_label(raw: str) -> str | None:
     """Extract a valid label from raw LLM output.  Returns None if none found."""
     raw_lower = raw.strip().lower()
@@ -176,37 +147,40 @@ def _sanitise_label(raw: str) -> str | None:
 def _classify_via_api(content: str, model: str) -> str | None:
     """Classify *content* via the DeepSeek API.  Returns label or None on failure.
 
+    Delegates the HTTP call to the shared ``_llm_utils.call_llm`` so there is
+    one client/retry/reasoning implementation across the module.
+
     Security:
       - Content sent to API is truncated to 500 chars.
       - Full API key is NEVER logged — only the masked version.
       - Logged message content is truncated to 60 chars.
     """
-    client = _get_client()
+    from memory_skill._llm_utils import call_llm
+
+    api_base = _get_env("IMPORTANCE_API_BASE", _DEFAULT_API_BASE)
+    api_key = _get_env("IMPORTANCE_API_KEY", _DEFAULT_API_KEY)
     truncated = content[:500]
 
     try:
-        resp = client.chat.completions.create(
+        raw = call_llm(
+            api_base=api_base,
+            api_key=api_key,
             model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": _CLASSIFICATION_TEMPLATE.format(content=truncated),
-                }
-            ],
-            temperature=0.0,
+            prompt=_CLASSIFICATION_TEMPLATE.format(content=truncated),
             max_tokens=1024,
+            temperature=0.0,
+            retries=0,
         )
     except Exception as exc:
         _log.warning("LLM gate failed: %s, falling back to rules", exc)
         return None
 
-    raw = resp.choices[0].message.content or ""
-    label = _sanitise_label(raw)
+    label = _sanitise_label(raw or "")
 
     if label is None:
         _log.warning(
             "LLM gate returned unrecognized label=%r (from msg=%r), falling back to rules",
-            raw[:60],
+            (raw or "")[:60],
             truncated[:60],
         )
         return None

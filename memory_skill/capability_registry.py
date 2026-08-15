@@ -71,6 +71,18 @@ def _token_overlap(query: str, content: str) -> bool:
     return bool(q_tokens & _query_tokens(content))
 
 
+def token_overlap(query: str, content: str) -> bool:
+    """Public entry point for the distinctive-token corroboration check.
+
+    Modules that need the KNOWN-ISSUES #1 double-corroboration (weaver's
+    historic hint, skill registry's verdict) call this instead of importing
+    the underscore-private helper at runtime. Semantics identical to
+    ``_token_overlap``; kept separate so the private name can stay for
+    internal callers while the seam is public.
+    """
+    return _token_overlap(query, content)
+
+
 @dataclass(frozen=True)
 class Capability:
     """A capability domain — one tree branch."""

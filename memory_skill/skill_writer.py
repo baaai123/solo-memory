@@ -103,7 +103,7 @@ class SkillWriter:
         except Exception as exc:
             logger.warning("learning_queue mark-done failed: %s", exc)
 
-        pending = getattr(self._ms, "_pending_gaps", set())
+        pending = self._ms.protocol.open_gaps()
         for gap in list(pending):
             if gap.lower() in query.lower() or query.lower() in gap.lower():
-                pending.discard(gap)
+                self._ms.protocol.mark_gap_filled(gap)

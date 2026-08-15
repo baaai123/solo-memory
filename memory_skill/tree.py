@@ -598,6 +598,15 @@ class TreeManager:
             searches = self._fallback_navigate()
         return self._resolve_searches(searches)
 
+    def navigate_without_llm(self) -> str:
+        """Deterministic tree context with NO LLM involvement.
+
+        Used by the passive weave path (ADR-0002: weave is pure context
+        assembly, no internal LLM). Agents that want LLM-selected branches
+        call ``navigate(query)`` explicitly through a tool instead.
+        """
+        return self._resolve_searches(self._fallback_navigate())
+
     def _llm_navigate(self, query: str) -> list[dict] | None:
         """Ask the classifier (LLM) to select branches + time ranges.
 

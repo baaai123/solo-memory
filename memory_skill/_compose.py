@@ -20,6 +20,7 @@ from memory_skill.contracts import (
     SawBufferProtocol,
     TreeManagerProtocol,
 )
+from memory_skill.protocol_state import ProtocolState
 
 _logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ class ClassificationRequired(Exception):
 
 class GapRequired(Exception):
     """Raised by weave() when classified mission has unfulfilled skill gaps."""
+
+
+class SkillCheckRequired(Exception):
+    """Raised by weave() when a classified mission has not yet checked existing skills."""
 
 
 @dataclass
@@ -47,9 +52,38 @@ class MemorySystem:
     retriever: object = None
     learning_queue: object = None
     pending_store: object = None
-    _classify_pending: str | None = None
-    _pending_gaps: set = field(default_factory=set)
+    protocol: object = None
     _composed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    # Backward-compatible view of the protocol state. New code should go
+    # through ``self.protocol``; these properties keep existing callers and
+    # tests working while the migration lands.
+    @property
+    def _classify_pending(self):
+        return self.protocol.classify_pending if self.protocol else None
+
+    @_classify_pending.setter
+    def _classify_pending(self, value):
+        if self.protocol:
+            self.protocol.classify_pending = value
+
+    @property
+    def _pending_gaps(self):
+        return self.protocol.pending_gaps if self.protocol else set()
+
+    @_pending_gaps.setter
+    def _pending_gaps(self, value):
+        if self.protocol:
+            self.protocol.pending_gaps = value
+
+    @property
+    def _mission_pending_check(self):
+        return self.protocol.mission_pending_check if self.protocol else False
+
+    @_mission_pending_check.setter
+    def _mission_pending_check(self, value):
+        if self.protocol:
+            self.protocol.mission_pending_check = value
 
     def __init__(self, config: MemorySkillConfig | None = None, **overrides):
         """Create via ``MemorySystem(config)`` or ``MemorySystem(field=value).``
@@ -108,7 +142,6 @@ class MemorySystem:
             retriever=self.retriever,
             agent_name=self.config.agent_name,
             namespace=self.config.namespace,
-            emotion_outcomes=getattr(self, '_emotion_outcomes', []),
             tree=self.tree,
             gaps=self.gaps,
             pending_store=getattr(self, 'pending_store', None),
@@ -299,7 +332,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
         dialogue_store=dialogue_store, learned_store=learned_store,
         tree=tree, ingestor=ingestor, retriever=retriever,
         learning_queue=learning_queue, pending_store=pending_store,
-        _classify_pending=None, _pending_gaps=set(),
+        protocol=ProtocolState(),
         _composed_at=datetime.now(UTC),
     )
     return ms

@@ -17,6 +17,7 @@ from memory_skill.contracts import (
     MemoryEnvelope,
     SawEntry,
 )
+from memory_skill.protocol_state import ProtocolState
 
 
 def _as_utc(dt) -> datetime:
@@ -505,8 +506,7 @@ def build_fast_system(config=None):
         retriever=retriever,
         learning_queue=None,
         pending_store=pending_store,
-        _classify_pending=None,
-        _pending_gaps=set(),
+        protocol=ProtocolState(),
         _composed_at=datetime.now(UTC),
     )
     return ms

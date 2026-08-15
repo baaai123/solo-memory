@@ -25,7 +25,8 @@
 | 术语 | 定义 |
 |---|---|
 | **weave** | 组装分层记忆上下文的读操作，输出 WeaveContext（tier1/tier2/nudge/gap_context 等区块）。 |
-| **协议门控（Protocol Gate）** | weave() 入口的两道强制检查：① ClassificationRequired——上一轮未分类则拒绝；② GapRequired——mission 的技能缺口未补齐则拒绝。迫使 agent 按闭环执行。 |
+| **协议门控（Protocol Gate）** | weave() 入口的三道强制检查（状态由 ProtocolState 单一拥有）：① ClassificationRequired——上一轮未分类则拒绝；② SkillCheckRequired——mission 已分类但未查已有技能则拒绝；③ GapRequired——mission 的技能缺口未补齐则拒绝。迫使 agent 按闭环执行。 |
+| **ProtocolState** | 协议状态（classify_pending / pending_gaps / mission_pending_check）的单一拥有者。MemorySystem 持引用，tools/skill_writer 经其 API 读写，不再用魔法字段跨模块裸访问。 |
 | **classify** | agent 每轮必须调用的工具。`memory_classify(category, gaps=[])`——分类为 chat/skill/mission/pref/pers；mission 类可附带 gaps 列表触发补齐封锁。 |
 | **tier2 / 对话单元** | 检索命中后展开为"±2 轮对话上下文"的单元，而非孤立片段。 |
 | **RRF 融合** | 检索排序：BM25（权重 2.5）× semantic（0.5）× time（0.5）加权。 |

@@ -22,11 +22,10 @@ import logging
 logger = logging.getLogger("memory_skill.skill_registry")
 
 
-# Answerability thresholds — same calibration story as capability_registry
-# (KNOWN-ISSUES #1): semantic score alone is enough above STRONG; below it
-# we need token corroboration before calling something "known".
-_SEM_STRONG = 0.85
-_SEM_CORROBORATED = 0.72
+# Answerability thresholds — single source of truth is capability_registry
+# (KNOWN-ISSUES #1). Imported here so a calibration change lands once.
+from memory_skill.capability_registry import _SEM_CORROBORATED, _SEM_STRONG
+
 _PARTIAL_FLOOR = 0.45
 
 

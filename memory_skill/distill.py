@@ -161,7 +161,8 @@ def _parse_candidates(raw: str | None) -> list[DistillCandidate]:
 
 def distill(dialogue_store, pending_store,
             since_days: int = 7, offset: int = 0,
-            limit: int = _MAX_FRAGMENTS) -> dict:
+            limit: int = _MAX_FRAGMENTS,
+            llm_caller=None) -> dict:
     """Distill fragments into pending candidates.
 
     Returns ``{"candidates": [...], "rejected": n, "stored": n}``.
@@ -171,7 +172,13 @@ def distill(dialogue_store, pending_store,
     ``offset``/``limit`` walk the history window by window so old memories
     get distilled too; the caller passes the next offset after each call
     until ``note == "no fragments"``.
+
+    ``llm_caller`` (optional) injects the prompt→text LLM boundary for
+    tests; defaults to the shared ``_llm_utils`` implementation.
     """
+    if llm_caller is None:
+        llm_caller = _call_llm
+
     batches = _fragment_batches(dialogue_store, since_days, offset, limit)
     if not batches:
         return {"candidates": [], "rejected": 0, "stored": 0, "note": "no fragments"}
@@ -180,7 +187,7 @@ def distill(dialogue_store, pending_store,
     rejected = 0
     error: str | None = None
     for batch in batches:
-        raw = _call_llm(_build_prompt(batch))
+        raw = llm_caller(_build_prompt(batch))
         if raw is None:
             error = "LLM call failed (missing credentials?)"
             break

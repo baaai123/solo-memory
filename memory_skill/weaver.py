@@ -32,6 +32,10 @@ from memory_skill.contracts import (
     SawBufferProtocol,
     TreeManagerProtocol,
 )
+from memory_skill.capability_registry import (
+    _SEM_CORROBORATED,
+    token_overlap,
+)
 
 if TYPE_CHECKING:
     from memory_skill.retriever import Retriever
@@ -64,7 +68,6 @@ class WeaverStores:
     retriever: Retriever
     agent_name: str
     namespace: str
-    emotion_outcomes: list[dict]
     tree: TreeManagerProtocol | None = None
     gaps: list = field(default_factory=list)
     pending_store: object = None
@@ -77,7 +80,6 @@ class WeaveContext:
     tier1_context: Always injected (~80 tokens). Scene perception.
     tier2_context: Deep memory retrieval (~150 tokens). Gated by depth.
     memory_nudge: High-weight reminders. Weight >= 0.85 threshold.
-    emotion_context: Derived emotional bias from partner memory history.
     needs_second_pass: True when high-weight memories warrant a follow-up
         injection after the agent's next response (heartbeat-style).
     """
@@ -86,7 +88,6 @@ class WeaveContext:
     tier1_context: str = ""
     tier2_context: str = ""
     memory_nudge: str = ""
-    emotion_context: str = ""
     tree_context: str = ""
     tree_nav: str = ""
     skill_context: str = ""
@@ -101,10 +102,24 @@ class WeaveContext:
     needs_second_pass: bool = False
 
     def to_prompt_block(self) -> str:
+        # MANDATORY directive block — rendered first and visually separated
+        # from background memory so the agent cannot mistake directives for
+        # passive context. Classification is required every turn; pending
+        # learning/decomposition directives are enforced by ProtocolGate.
+        directives: list[str] = []
+        directives.append(
+            "[分类指令] 必须对上一轮用户消息分类 — "
+            "memory_classify(category=chat|skill|mission|pref|pers)"
+            " — 不可跳过，否则下一轮 weave 拒绝服务"
+        )
+        if self.gap_context:
+            directives.append(self.gap_context)
+
         parts: list[str] = []
-        # Classification directive — MANDATORY every turn
-        parts.append("[分类指令] 必须对上一轮用户消息分类 — memory_classify(category=chat|skill|mission|pref|pers)"
-                     " — 不可跳过，否则下一轮 weave 拒绝服务")
+        if directives:
+            parts.append("═══ 必须执行指令（protocol_gate 强制）═══\n"
+                         + "\n".join(directives)
+                         + "\n═══ 指令区结束（以下为背景记忆，仅供参考）═══")
         if self.time_context:
             parts.append(self.time_context)
         # tier2 first (if available), tier1 as fallback
@@ -112,8 +127,6 @@ class WeaveContext:
             parts.append(self.tier2_context)
         elif self.tier1_context:
             parts.append(self.tier1_context)
-        if self.emotion_context:
-            parts.append(self.emotion_context)
         if self.memory_nudge:
             parts.append(self.memory_nudge)
         if self.skill_context:
@@ -126,8 +139,6 @@ class WeaveContext:
             parts.append(self.pers_context)
         if self.conclusion_context:
             parts.append(self.conclusion_context)
-        if self.gap_context:
-            parts.append(self.gap_context)
         if self.pending_context:
             parts.append(self.pending_context)
         if self.title_preview:
@@ -143,7 +154,7 @@ class WeaveContext:
     @property
     def is_empty(self) -> bool:
         return not (self.tier1_context or self.tier2_context
-                    or self.memory_nudge or self.emotion_context)
+                    or self.memory_nudge)
 
 
 # ── Constants ────────────────────────────────────────
@@ -187,6 +198,12 @@ def weave(
     ctx.tier1_context = _build_tier1(
         stores.dialogue_store, stores.saw_buffer, stores.agent_name, scene_summary)
 
+    # Directives must render even for brand-new sessions: pending learning /
+    # decomposition items are the whole point of a fresh mission, and a
+    # no-history early return would silently drop them.
+    ctx.gap_context = _build_gap_context(stores.gaps)
+    ctx.pending_context = _build_pending_context(stores.pending_store)
+
     total_stored = _count_all_dialogue(stores.dialogue_store)
     if turn_count < 3 and total_stored == 0:
         return ctx  # no history at all — tier1 only
@@ -194,44 +211,40 @@ def weave(
     if turn_count < 3:
         turn_count = 3
 
-    if turn_count <= 10:
-        if user_message:
-            ctx.tier2_context = _build_tier2(
-                stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
-            ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
-        ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
-        ctx.memory_nudge = _build_nudge(stores.learned_store, user_message)
-        ctx.skill_context = _build_skill_context(stores.retriever, user_message)
-        ctx.mission_context = _build_mission_context(stores.retriever, user_message)
-        ctx.pref_context = _build_pref_context(stores.retriever)
-        ctx.pers_context = _build_pers_context(stores.retriever)
-        ctx.conclusion_context = _build_conclusion_context(stores.retriever)
-        ctx.gap_context = _build_gap_context(stores.gaps)
-        ctx.pending_context = _build_pending_context(stores.pending_store)
-        ctx.title_preview = _build_title_preview(stores.retriever)
-        ctx.tree_context = _build_tree_context(stores.tree, user_message)
-        ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
-        return ctx
+    _apply_standard_blocks(ctx, stores, user_message, ns, partner)
 
-    # deep
+    # deep depth adds the heartbeat check: surface a second-pass nudge when a
+    # high-weight memory is relevant to the current message.
+    if turn_count > 10 and _has_high_weight(stores.learned_store, user_message):
+        ctx.needs_second_pass = True
+    return ctx
+
+
+def _apply_standard_blocks(
+    ctx: WeaveContext,
+    stores: WeaverStores,
+    user_message: str,
+    ns: str,
+    partner: str | None,
+) -> None:
+    """Populate the standard context slots shared by every non-compact weave.
+
+    One call site instead of two copy-pasted branches; adding a context slot
+    now means editing a single line here rather than both branches.
+    """
     if user_message:
         ctx.tier2_context = _build_tier2(
             stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
         ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
-    ctx.emotion_context = _build_emotion_context(stores.emotion_outcomes, partner)
     ctx.memory_nudge = _build_nudge(stores.learned_store, user_message)
     ctx.skill_context = _build_skill_context(stores.retriever, user_message)
     ctx.mission_context = _build_mission_context(stores.retriever, user_message)
     ctx.pref_context = _build_pref_context(stores.retriever)
     ctx.pers_context = _build_pers_context(stores.retriever)
     ctx.conclusion_context = _build_conclusion_context(stores.retriever)
-    ctx.gap_context = _build_gap_context(stores.gaps)
-    ctx.pending_context = _build_pending_context(stores.pending_store)
+    ctx.title_preview = _build_title_preview(stores.retriever)
     ctx.tree_context = _build_tree_context(stores.tree, user_message)
     ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
-    if _has_high_weight(stores.learned_store, user_message):
-        ctx.needs_second_pass = True
-    return ctx
 
 
 # ── Tier builders ────────────────────────────────────
@@ -359,52 +372,6 @@ def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
     return ""
 
 
-def _build_emotion_context(
-    outcomes: list,
-    partner: str | None = None,
-) -> str:
-    """Derive emotional bias from partner memory history.
-
-    Samples recent feedback outcomes for the partner to estimate
-    the agent's "affinity" — how positively or negatively the
-    relationship feels based on past interactions.
-
-    This is injected as a tonal hint, not a hard directive —
-    the agent still decides how to express it.
-    """
-    if not partner:
-        return ""
-
-    try:
-        # Count recent outcomes for this partner
-        outcomes = outcomes[-50:]  # last 50 feedback events
-        positive = 0
-        negative = 0
-        for outcome in outcomes:
-            if isinstance(outcome, dict):
-                mem_ids = outcome.get("memory_ids", [])
-                if mem_ids:
-                    positive += 1 if outcome.get("outcome") == "positive" else 0
-                    negative += 1 if outcome.get("outcome") == "negative" else 0
-    except Exception:
-        return ""
-
-    total = positive + negative
-    if total < 3:
-        return ""  # not enough data for a signal
-
-    ratio = positive / total if total > 0 else 0.5
-
-    if ratio >= 0.7:
-        return f"[你当前对{partner}的感受] 好感度偏高——你与{partner}的互动大多愉快。语气可以温柔、亲近。"
-    elif ratio >= 0.5:
-        return f"[你当前对{partner}的感受] 关系平稳——与{partner}的互动正常。语气自然即可。"
-    elif ratio >= 0.3:
-        return f"[你当前对{partner}的感受] 有些疏远——与{partner}的互动不太顺利。语气可以保持礼貌但保持距离。"
-    else:
-        return f"[你当前对{partner}的感受] 好感度偏低——与{partner}的互动常有不快。语气可以冷淡或回避。"
-
-
 def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
     """Build nudge with behavioral intensity based on weight.
 
@@ -437,8 +404,7 @@ def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
         return ""
 
     if user_message.strip():
-        from memory_skill.capability_registry import _token_overlap
-        high = [e for e in high if _token_overlap(user_message, e.content)]
+        high = [e for e in high if token_overlap(user_message, e.content)]
         if not high:
             return ""
 
@@ -499,8 +465,7 @@ def _has_high_weight(memory: MemorySource, user_message: str = "") -> bool:
         if not high:
             return False
         if user_message.strip():
-            from memory_skill.capability_registry import _token_overlap
-            return any(_token_overlap(user_message, e.content) for e in high)
+            return any(token_overlap(user_message, e.content) for e in high)
         return True
     except Exception as e:
         _logger.debug("High-weight check failed: %s", e)
@@ -523,35 +488,47 @@ def _build_tree_context(tree, user_message: str) -> str:
 
 
 def _build_tree_nav(tree, user_message: str) -> str:
-    """Build LLM-navigated tree context in parallel with RRF retrieval.
+    """Build deterministic tree context in parallel with RRF retrieval.
 
-    Delegates to TreeManager.navigate() which uses LLM to select relevant
-    branches + time ranges, falling back to all branches on failure.
+    Uses the LLM-free navigation path so weave() never triggers an internal
+    LLM call (ADR-0002: weave is pure context assembly). Agents that want
+    LLM-selected branches call TreeManager.navigate() explicitly via a tool.
     """
     if not tree or not user_message:
         return ""
     try:
-        return tree.navigate(user_message)
+        return tree.navigate_without_llm()
     except Exception as e:
         _logger.debug("Tree navigation failed: %s", e)
         return ""
+
+
+def _safe_retrieve(
+    retriever: RetrievalSource,
+    query: str,
+    category: object,
+    limit: int,
+):
+    """Retrieve with the category filter, tolerating backend failures.
+
+    The category-slot builders share this scaffold (guard + filter +
+    empty-check) and differ only in how they render their hits. One
+    implementation, six call sites.
+    """
+    try:
+        result = retriever.retrieve(query, limit=limit, filters={"category": category})
+    except Exception:
+        return []
+    return result.entries if result.entries else []
 
 
 def _build_skill_context(retriever: RetrievalSource, user_message: str) -> str:
     """Retrieve relevant skill titles for agent awareness."""
     if not user_message:
         return ""
-    try:
-        result = retriever.retrieve(
-            user_message, limit=5,
-            filters={"category": "skill"},
-        )
-    except Exception:
-        return ""
-    if not result.entries:
-        return ""
+    entries = _safe_retrieve(retriever, user_message, "skill", 5)
     titles = []
-    for e in result.entries[:5]:
+    for e in entries[:5]:
         t = e.content.split('\n')[0].lstrip('# ')[:40]
         if t and t not in titles:
             titles.append(t)
@@ -561,15 +538,12 @@ def _build_skill_context(retriever: RetrievalSource, user_message: str) -> str:
 
 
 def _build_mission_context(retriever: RetrievalSource, user_message: str) -> str:
-    result = retriever.retrieve(
-        user_message, limit=2,
-        filters={"category": "mission"},
-    )
-    if not result.entries:
+    entries = _safe_retrieve(retriever, user_message, "mission", 2)
+    if not entries:
         return ""
     import re
     lines = ["[当前任务]"]
-    for e in result.entries[:2]:
+    for e in entries[:2]:
         title = e.content.split('\n')[0].lstrip('# ')[:50]
         lines.append(f"\n→ {title}")
         steps = re.split(r'\n##\s*', '\n' + e.content)
@@ -634,6 +608,10 @@ def _build_gap_context(gaps: list) -> str:
     if other:
         lines.append("[待处理] " + "; ".join(_query(g) for g in other[:3]))
 
+    # These directives are enforced: skipping them causes the next weave to
+    # be rejected by ProtocolGate, so the agent must act before continuing.
+    lines.append("⚠ 上述指令由协议硬门强制执行——不执行则下一轮记忆注入被拒绝。")
+
     return "\n".join(lines)
 
 
@@ -655,27 +633,21 @@ def _build_pending_context(pending_store) -> str:
 
 
 def _build_pref_context(retriever: RetrievalSource) -> str:
-    try:
-        result = retriever.retrieve("all", limit=10, filters={"category": "pref"})
-    except Exception:
-        return ""
-    if not result.entries:
+    entries = _safe_retrieve(retriever, "all", "pref", 10)
+    if not entries:
         return ""
     lines = ["[用户偏好]"]
-    for e in result.entries[-10:]:
+    for e in entries[-10:]:
         lines.append(f"  · {e.content}")
     return "\n".join(lines)
 
 
 def _build_pers_context(retriever: RetrievalSource) -> str:
-    try:
-        result = retriever.retrieve("all", limit=10, filters={"category": "pers"})
-    except Exception:
+    entries = _safe_retrieve(retriever, "all", "pers", 10)
+    if not entries:
         return ""
-    if not result.entries:
-        return ""
-    cards = [e for e in result.entries if e.content.startswith('# ')]
-    latest = max(cards, key=lambda e: len(e.content)) if cards else result.entries[-1]
+    cards = [e for e in entries if e.content.startswith('# ')]
+    latest = max(cards, key=lambda e: len(e.content)) if cards else entries[-1]
     return "[人格特征]\n  · " + latest.content
 
 
@@ -686,15 +658,11 @@ def _build_conclusion_context(retriever: RetrievalSource) -> str:
     unfiltered [近期记忆] slot and had no guaranteed exposure.  This
     gives them their own slot, newest first.
     """
-    try:
-        result = retriever.retrieve("all", limit=10,
-                                    filters={"category": "conclusion"})
-    except Exception:
-        return ""
-    if not result.entries:
+    entries = _safe_retrieve(retriever, "all", "conclusion", 10)
+    if not entries:
         return ""
     lines = ["[历史结论]"]
-    for e in result.entries[-3:]:
+    for e in entries[-3:]:
         title = e.metadata.get("title", "") if hasattr(e, "metadata") and e.metadata else ""
         content = title if title else e.content[:60].replace("\n", " ")
         lines.append(f"  · {content}")
@@ -702,21 +670,21 @@ def _build_conclusion_context(retriever: RetrievalSource) -> str:
 
 
 def _build_title_preview(retriever: RetrievalSource) -> str:
-    entries = retriever.retrieve(
-        "all", limit=5, filters={"category": {"$ne": "default"}})
-    if not entries.entries:
+    try:
+        result = retriever.retrieve(
+            "all", limit=5, filters={"category": {"$ne": "default"}})
+    except Exception:
+        return ""
+    entries = result.entries if result.entries else []
+    if not entries:
         return ""
     lines = ["[近期记忆]"]
-    for e in entries.entries[:5]:
+    for e in entries[:5]:
         title = e.metadata.get("title", "") if hasattr(e, "metadata") and e.metadata else ""
         content = title if title else e.content[:50].replace("\n", " ")
         lines.append(f"  · {content}")
     return "\n".join(lines)
 
-
-# Semantically-strong match threshold for the historic hint — same
-# corroboration constant as KNOWN-ISSUES #1 (`_SEM_CORROBORATED`).
-_HISTORIC_HINT_SEM_THRESHOLD: float = 0.72
 
 # Entries ingested in the last N minutes are this session's own turns —
 # hinting at them would tell the agent "you just said that". Skip them.
@@ -751,17 +719,15 @@ def _build_historic_hint(retriever: RetrievalSource, user_message: str) -> str:
     if not result.entries:
         return ""
 
-    from memory_skill.capability_registry import _token_overlap
-
     now = datetime.now(UTC)
     for e in result.entries:
-        if not e.semantic_score or e.semantic_score < _HISTORIC_HINT_SEM_THRESHOLD:
+        if not e.semantic_score or e.semantic_score < _SEM_CORROBORATED:
             continue
         if e.created_at and (now - e.created_at).total_seconds() < (
             _HISTORIC_HINT_RECENT_SKIP_MINUTES * 60
         ):
             continue
-        if not _token_overlap(user_message, e.content):
+        if not token_overlap(user_message, e.content):
             continue
         title = e.content.split("\n")[0].lstrip("# ")[:_HISTORIC_HINT_MAX_TITLE]
         date = e.created_at.strftime("%m-%d") if e.created_at else "过去"
