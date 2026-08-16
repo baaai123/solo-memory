@@ -37,9 +37,15 @@ class SkillCheckRequired(Exception):
     """Raised by weave() when a classified mission has not yet checked existing skills."""
 
 
-@dataclass
+@dataclass(eq=False)
 class MemorySystem:
-    """All memory stores in one place — no hidden state."""
+    """All memory stores in one place — no hidden state.
+
+    ``eq=False`` keeps identity semantics (and a working ``__hash__``):
+    instances are used as ``WeakKeyDictionary`` keys in ``tools.py``, and
+    weakrefs delegate hashing to the referent.  Value equality across the
+    composite stores is meaningless and was never relied upon.
+    """
 
     # All fields have defaults — the real constructor is __init__
     config: MemorySkillConfig | None = None
