@@ -192,6 +192,16 @@ class Ingestor:
             meta.update(extra_metadata)
 
         if dup:
+            # Cross-category merge would clobber the structured category
+            # (taught skill absorbed into a dialogue fragment becomes
+            # invisible to category-scoped check_skill) — dedup only
+            # within the same category.
+            dup_cat = dup.get("category") or self._config.namespace
+            target_cat = category or self._config.namespace
+            if dup_cat != target_cat:
+                dup = None
+
+        if dup:
             try:
                 # Merge: update content, bump weight, refresh timestamp
                 new_weight = dup["weight"] + 0.05

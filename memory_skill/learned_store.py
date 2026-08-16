@@ -306,6 +306,7 @@ class LearnedStore:
                 "content": content,
                 "weight": weight,
                 "distance": distance,
+                "category": meta.get("category"),
             }
 
         return None

@@ -291,6 +291,7 @@ class FakeLearnedStore:
                 "content": entry.content,
                 "weight": entry.weight,
                 "distance": distance,
+                "category": entry.category,
             }
         return None
 

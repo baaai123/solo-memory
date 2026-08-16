@@ -182,6 +182,24 @@ class TestIngestPipelineContract:
         assert receipt.deduped is True
         assert receipt.weight >= 0.55
 
+    def test_cross_category_dedup_does_not_merge(self, system) -> None:
+        from memory_skill.contracts import DialogueTurn
+
+        first = DialogueTurn(
+            id="t4a", role="user", content="remember python backend", timestamp=_naive_now()
+        )
+        system.ingest(first)  # category=default dialogue entry
+        # Same content taught as a skill must NOT merge into the dialogue
+        # entry — it needs its own category=skill entry to stay visible to
+        # SkillRegistry.check_skill.
+        receipt = system.ingestor.ingest_dialogue(
+            DialogueTurn(id="t4b", role="system",
+                         content="remember python backend", timestamp=_naive_now()),
+            category="skill",
+        )
+        assert receipt.deduped is False
+        assert receipt.entry_id == "dialogue:t4b"
+
     def test_ingest_screen_still_routes_to_saw(self, system) -> None:
         system.ingest_screen("screen frame text")
         assert system.saw_buffer.get_all()
