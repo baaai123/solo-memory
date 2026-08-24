@@ -1,6 +1,13 @@
 """Memory Skill — lightweight, real-time, self-evolving Agent memory module."""
 
-__version__ = "0.5.0"
+# Version is read dynamically from package metadata so it can never drift
+# from pyproject.toml again (0.5.0 was hardcoded while 0.6.0/0.7.0 shipped).
+try:
+    from importlib.metadata import version as _metadata_version
+
+    __version__ = _metadata_version("memory-skill")
+except Exception:  # source checkout without install metadata
+    __version__ = "0.7.1"
 
 from memory_skill.contracts import (
     DialogueTurn,

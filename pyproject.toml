@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory-skill"
-version = "0.7.0"
+version = "0.7.1"
 description = "Long-term memory for AI Agents — local-first, self-evolving, zero-API retrieval"
 authors = [
     { name = "Memory Skill Contributors" }
