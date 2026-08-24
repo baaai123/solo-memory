@@ -71,6 +71,8 @@ class WeaverStores:
     tree: TreeManagerProtocol | None = None
     gaps: list = field(default_factory=list)
     pending_store: object = None
+    degraded: bool = False
+    degraded_reason: str | None = None
 
 
 @dataclass
@@ -99,6 +101,7 @@ class WeaveContext:
     title_preview: str = ""
     historic_hint: str = ""
     pending_context: str = ""
+    embedder_banner: str = ""
     needs_second_pass: bool = False
 
     def to_prompt_block(self) -> str:
@@ -120,6 +123,8 @@ class WeaveContext:
             parts.append("═══ 必须执行指令（protocol_gate 强制）═══\n"
                          + "\n".join(directives)
                          + "\n═══ 指令区结束（以下为背景记忆，仅供参考）═══")
+        if self.embedder_banner:
+            parts.append(self.embedder_banner)
         if self.time_context:
             parts.append(self.time_context)
         # tier2 first (if available), tier1 as fallback
@@ -203,6 +208,13 @@ def weave(
     # no-history early return would silently drop them.
     ctx.gap_context = _build_gap_context(stores.gaps)
     ctx.pending_context = _build_pending_context(stores.pending_store)
+
+    if stores.degraded:
+        ctx.embedder_banner = (
+            "⚠ [EMBEDDER DEGRADED] 语义检索/去重/学习判定已降级为 SHA-256 hash（无 ONNX 模型）"
+            + (f" — {stores.degraded_reason}" if stores.degraded_reason else "")
+            + "。修复: 运行 ./download_model.sh 或 export MEMORY_MODEL_PATH=… 后重启。"
+        )
 
     total_stored = _count_all_dialogue(stores.dialogue_store)
     if turn_count < 3 and total_stored == 0:

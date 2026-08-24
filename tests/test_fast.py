@@ -534,3 +534,70 @@ class TestFastDistill:
         preview = block.split("[近期记忆]")[1] if "[近期记忆]" in block else ""
         assert "SYSTEM DIRECTIVE" not in preview
         assert "FastAPI" in preview
+
+
+class TestEmbedderBanner:
+    """Weave banner rendering for degraded embedder mode."""
+
+    def _stores(self, ms, *, degraded: bool, reason: str | None):
+        from memory_skill.weaver import WeaverStores
+
+        return WeaverStores(
+            saw_buffer=ms.saw_buffer,
+            dialogue_store=ms.dialogue_store,
+            learned_store=ms.learned_store,
+            retriever=ms.retriever,
+            agent_name=ms.config.agent_name,
+            namespace=ms.config.namespace,
+            tree=ms.tree,
+            gaps=ms.gaps,
+            pending_store=ms.pending_store,
+            degraded=degraded,
+            degraded_reason=reason,
+        )
+
+    def test_degraded_banner_renders_even_for_brand_new_session(self):
+        """Banner renders on the no-history early-return path."""
+        from memory_skill.weaver import weave
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        stores = self._stores(
+            ms, degraded=True, reason="ONNX model file not found")
+        ctx = weave(stores, user_message="", scene_summary="")
+        assert ctx.embedder_banner
+        block = ctx.to_prompt_block()
+        assert "EMBEDDER DEGRADED" in block
+        assert "ONNX model file not found" in block
+
+    def test_degraded_banner_after_directives(self):
+        """Mandate block stays first; banner is the first background part."""
+        from memory_skill.weaver import weave
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms._classify_pending = None
+        stores = self._stores(ms, degraded=True, reason="missing model")
+        ctx = weave(stores, user_message="hello", scene_summary="")
+        block = ctx.to_prompt_block()
+        assert block.index("═══ 必须执行指令") < block.index("EMBEDDER DEGRADED")
+        assert block.index("指令区结束") < block.index("EMBEDDER DEGRADED")
+
+    def test_no_banner_when_not_degraded(self):
+        from memory_skill.weaver import weave
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        ms._classify_pending = None
+        stores = self._stores(ms, degraded=False, reason=None)
+        ctx = weave(stores, user_message="hello", scene_summary="")
+        assert ctx.embedder_banner == ""
+        assert "EMBEDDER DEGRADED" not in ctx.to_prompt_block()
+
+    def test_reasonless_banner_still_renders(self):
+        """degraded=True with reason=None renders the banner sans reason."""
+        from memory_skill.weaver import weave
+
+        ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
+        stores = self._stores(ms, degraded=True, reason=None)
+        ctx = weave(stores, user_message="", scene_summary="")
+        assert "EMBEDDER DEGRADED" in ctx.to_prompt_block()
+        assert " — None" not in ctx.embedder_banner
+
