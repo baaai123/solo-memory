@@ -94,7 +94,7 @@ pip install -e ".[onnx]" -q 2>/dev/null || warn "onnx extras not available (ONNX
 
 # ── Step 6: Model setup ──────────────────────────────────────────────────────
 if [ "$SKIP_MODEL" = true ]; then
-    info "Skipping model setup (--no-model). Embedder will use SHA-256 fallback."
+    warn "运行模式: 无嵌入模型（SHA-256 fallback，语义检索/去重/学习判定失效，仅 BM25 可用）"
 elif [ -n "$MODEL_PATH" ]; then
     info "Using custom model path: $MODEL_PATH"
     export MEMORY_MODEL_PATH="$MODEL_PATH"
@@ -108,21 +108,26 @@ else
         mkdir -p models
         ln -sfn /home/baaai/models/bge-large-en-v1.5 "$MODEL_DIR"
     else
-        warn "No local model found. Options:"
-        echo ""
-        echo "  1. Download from HuggingFace:"
-        echo "     pip install huggingface_hub"
-        echo "     python -c \""
-        echo "       from huggingface_hub import snapshot_download"
-        echo "       snapshot_download('BAAI/bge-large-en-v1.5', local_dir='models/bge-large-en-v1.5')"
-        echo "     \""
-        echo "     # Then convert to ONNX: python -m optimum.onnxruntime --model models/bge-large-en-v1.5 models/bge-large-en-v1.5"
-        echo ""
-        echo "  2. Run without model (SHA-256 fallback, degraded search):"
-        echo "     ./setup.sh --no-model"
-        echo ""
-        echo "  3. Set MEMORY_MODEL_PATH to point to an existing ONNX model:"
-        echo "     export MEMORY_MODEL_PATH=/path/to/your/model"
+        info "未找到本地模型，尝试自动下载 bge-large-en-v1.5（约 1.3GB）…"
+        # 直连 HuggingFace，失败则自动换 hf-mirror.com 镜像
+        if ! bash download_model.sh; then
+            warn "直连 HuggingFace 失败，改用 hf-mirror.com 镜像重试…"
+            if ! HF_ENDPOINT=https://hf-mirror.com bash download_model.sh; then
+                error "模型下载失败。手动修复："
+                error "  bash download_model.sh                     # 直连"
+                error "  HF_ENDPOINT=https://hf-mirror.com bash download_model.sh   # 国内镜像"
+                error "  或显式接受降级模式：./setup.sh --no-model"
+                exit 1
+            fi
+        fi
+
+        # 下载完成后校验 ONNX 文件（转换产物可能位于 onnx/ 子目录或模型根目录）
+        if [ ! -f "$MODEL_DIR/onnx/model.onnx" ] && [ ! -f "$MODEL_DIR/model.onnx" ]; then
+            error "模型下载完成但未找到 ONNX 文件（检查 $MODEL_DIR/onnx/model.onnx 或 $MODEL_DIR/model.onnx）"
+            error "请确认 optimum 转换成功，或手动重试：bash download_model.sh"
+            exit 1
+        fi
+        info "模型已就绪：$MODEL_DIR"
     fi
 fi
 

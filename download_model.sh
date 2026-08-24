@@ -19,6 +19,10 @@ cd "$SCRIPT_DIR"
 MODEL_DIR="models/bge-large-en-v1.5"
 MODEL_ID="BAAI/bge-large-en-v1.5"
 
+# 镜像支持：HF_ENDPOINT 环境变量（huggingface_hub 原生读取）。
+# 国内网络建议：HF_ENDPOINT=https://hf-mirror.com ./download_model.sh
+
+echo "HF endpoint: ${HF_ENDPOINT:-https://huggingface.co} (设置 HF_ENDPOINT=https://hf-mirror.com 可走国内镜像)"
 echo "Downloading $MODEL_ID → $MODEL_DIR ..."
 mkdir -p models
 
