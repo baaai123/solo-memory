@@ -115,7 +115,7 @@
 | `click` | CLI | ✅ |
 | `pydantic` / `tenacity` / `openai` / `requests` | LLM 调用 | ✅ |
 | `python-dotenv` | 环境变量 | ✅ |
-| `onnxruntime` + `tokenizers` | ONNX 嵌入 | ⚠️ 可选（缺则 SHA-256 fallback，检索精度大幅下降） |
+| `onnxruntime` + `tokenizers` | ONNX 嵌入 | ⚠️ 强烈建议（缺则 SHA-256 fallback —— 语义检索、去重合并、can_answer 学习判定、tier2/nudge 全部失效，仅剩 BM25 可用） |
 | `llama-cpp-python` | 本地 LLM（查询改写/自动反馈） | ⚠️ 可选 |
 
 ```bash
@@ -132,6 +132,12 @@ pip install -r requirements.txt
 ```bash
 ./download_model.sh             # 下载 bge-large-en-v1.5 → models/
 ```
+
+> **⚠️ 不下载模型 = 插件降级运行**：无 ONNX 模型时插件静默使用 SHA-256 hash 嵌入，
+> 语义检索 / 记忆去重 / 学习能力判定 / tier2 上下文全部失效，仅中文 BM25 检索可用。
+> `setup.sh` 默认会自动下载模型（直连失败自动换 `hf-mirror.com` 镜像）；
+> 网络受限时手动执行 `HF_ENDPOINT=https://hf-mirror.com ./download_model.sh`。
+> 明确接受降级：`./setup.sh --no-model` 或环境变量 `MEMORY_SKIP_MODEL=1`。
 
 ### 配置环境变量
 
