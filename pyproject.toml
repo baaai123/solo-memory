@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory-skill"
-version = "0.6.0"
+version = "0.7.0"
 description = "Long-term memory for AI Agents — local-first, self-evolving, zero-API retrieval"
 authors = [
     { name = "Memory Skill Contributors" }
@@ -70,8 +70,8 @@ memory-proxy = "memory_skill.transparent_proxy:_serve"
 memory-mcp = "memory_skill.mcp_server:serve"
 
 [project.urls]
-Repository = "https://github.com/user/memory-skill"
-Issues = "https://github.com/user/memory-skill/issues"
+Repository = "https://github.com/baaai123/solo-memory"
+Issues = "https://github.com/baaai123/solo-memory/issues"
 
 [tool.ruff]
 line-length = 100
