@@ -85,6 +85,7 @@ class Embedder:
             self._dim = _embedder_cache[key]._dim
             self._model_path = _embedder_cache[key]._model_path
             self._fallback_enabled = _embedder_cache[key]._fallback_enabled
+            self._load_error = _embedder_cache[key]._load_error
             return
 
         self._dim: int = config.embedding_dim
@@ -95,10 +96,35 @@ class Embedder:
         self._session: object | None = None
         self._tokenizer: object | None = None
         self._load_attempted: bool = False
+        self._load_error: str | None = None
 
         _embedder_cache[key] = self
 
     # ── Public API ────────────────────────────────────────────────────────
+
+    @property
+    def mode(self) -> str:
+        """Current embedding mode: ``"onnx"`` or ``"fallback"``.
+
+        Triggers the lazy load (once) so the reported mode reflects a real
+        load attempt rather than uninitialized state.
+        """
+        self._ensure_model_loaded()
+        return "onnx" if self._session is not None else "fallback"
+
+    @property
+    def degraded(self) -> bool:
+        """True when the ONNX model is unavailable and the hash fallback is in use.
+
+        While degraded, semantic retrieval / dedup / learning judgments are
+        reduced to SHA-256 hash equality — visibly worse than real embeddings.
+        """
+        return self.mode == "fallback"
+
+    @property
+    def reason(self) -> str | None:
+        """Human-readable reason for the degraded mode (``None`` when healthy)."""
+        return self._load_error
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string into a 1024-dim float vector.
@@ -165,6 +191,7 @@ class Embedder:
                     f"Failed to load ONNX model from '{self._model_path}': {exc}"
                 ) from exc
             # Fallback enabled — use hash-based path with warning.
+            self._load_error = str(exc)
             logging.warning(
                 "ONNX model unavailable from '%s' — using SHA-256 fallback. "
                 "Semantic search will be DEGRADED (hash equality only).",
