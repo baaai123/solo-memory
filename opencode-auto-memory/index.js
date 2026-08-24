@@ -1,4 +1,4 @@
-import { execFile, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -24,12 +24,21 @@ const PY = process.env.MEMORY_SKILL_PYTHON
 const BRIDGE = path.join(__dirname, "bridge.py");
 const REQUIREMENTS = path.join(PROJECT, "requirements.txt");
 
+// ONNX embedding model (bge-large-en-v1.5) — guaranteed by the first-run
+// bootstrap. Without it the Python layer falls back to SHA-256 hash-only
+// semantic search (dedup/can_answer disabled) = silently degraded.
+const MODEL_DIR = path.join(PROJECT, "models", "bge-large-en-v1.5");
+const MODEL_ONNX = path.join(MODEL_DIR, "model.onnx");
+const MODEL_ONNX_ALT = path.join(MODEL_DIR, "onnx", "model.onnx");
+const MODEL_SKIP_ENV = "MEMORY_SKIP_MODEL"; // "1" = explicitly skip (== setup.sh --no-model)
+
 let setupInProgress = false;
 let setupDone = false;
+let modelDownloadTried = false; // one download attempt per process
 
 // First-run bootstrap: create venv + install deps if missing
 function ensureSetup() {
-  if (setupDone) return true;
+  if (setupDone) return ensureModel();
   if (!fs.existsSync(PY)) {
     if (setupInProgress) return false;
     setupInProgress = true;
@@ -40,7 +49,7 @@ function ensureSetup() {
       setupInProgress = false;
       setupDone = true;
       console.error("[solo-memory] Setup complete.");
-      return true;
+      return ensureModel();
     } catch (e) {
       setupInProgress = false;
       console.error("[solo-memory] Setup failed:", e.message);
@@ -48,7 +57,35 @@ function ensureSetup() {
     }
   }
   setupDone = true;
-  return true;
+  return ensureModel();
+}
+
+function modelOk() {
+  return fs.existsSync(MODEL_ONNX) || fs.existsSync(MODEL_ONNX_ALT);
+}
+
+// Model-installation guarantee: after this returns, either the ONNX model
+// exists, or the plugin has logged a prominent actionable error to stderr.
+// NEVER throws — degraded-but-alive beats crashing opencode's startup.
+function ensureModel() {
+  try {
+    if (modelOk()) return true;
+    if (process.env[MODEL_SKIP_ENV] === "1") {
+      console.error("[solo-memory] MEMORY_SKIP_MODEL=1 — running WITHOUT embedding model (DEGRADED: hash-only search). Download with: " + path.join(PROJECT, "download_model.sh"));
+      return true;
+    }
+    if (!modelDownloadTried) {
+      modelDownloadTried = true;
+      console.error("[solo-memory] Embedding model missing — downloading bge-large-en-v1.5 (≈1.3GB, may take a while)…");
+      const env = { ...process.env, HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com" };
+      execFileSync("bash", [path.join(PROJECT, "download_model.sh")], { cwd: PROJECT, timeout: 900000, stdio: "inherit", env });
+      console.error("[solo-memory] Model download complete.");
+    }
+    return true;
+  } catch (e) {
+    console.error("[solo-memory] ⚠ MODEL DOWNLOAD FAILED — memory will run DEGRADED (hash-only semantic search; dedup/can_answer disabled). Manual fix:\n  1) bash " + path.join(PROJECT, "download_model.sh") + "\n  2) or set HF_ENDPOINT to a reachable mirror\n  3) or export MEMORY_SKIP_MODEL=1 to acknowledge degraded mode");
+    return true;
+  }
 }
 
 function runBridge(args, input = "") {
