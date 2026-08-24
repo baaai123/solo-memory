@@ -835,6 +835,41 @@ class TestErrorHandling:
         assert h["embedder"]["mode"] in ("fallback",), f"Expected fallback, got {h['embedder']['mode']}"
 
 
+class TestDegradedSignaling:
+    """Explicit DEGRADED signaling when the ONNX model is missing."""
+
+    def test_health_reports_degraded(self) -> None:
+        """health() exposes model_ok=False + embedder degraded details."""
+        skill = MemorySkill(MemorySkillConfig(
+            db_path=":memory:",
+            model_path="/nonexistent/degraded_model.onnx",
+        ))
+        h = skill.health()
+        assert h["model_ok"] is False
+        assert h["embedder"]["degraded"] is True
+        assert h["embedder"]["mode"] == "fallback"
+        assert h["embedder"]["reason"], "degraded reason should be non-empty"
+        assert h["embedder"]["model_path"] == "/nonexistent/degraded_model.onnx"
+
+    def test_handle_status_adds_warning(self) -> None:
+        """handle_status() surfaces a human-readable warning when degraded."""
+        from memory_skill.tools import handle_status
+
+        skill = MemorySkill(MemorySkillConfig(
+            db_path=":memory:",
+            model_path="/nonexistent/status_model.onnx",
+        ))
+        result = handle_status(skill, {})
+        assert result.get("embedder", {}).get("degraded") is True
+        assert "warning" in result, "degraded status must carry a warning field"
+        assert "EMBEDDER DEGRADED" in result["warning"]
+        assert "download_model.sh" in result["warning"]
+        # Full health dict is still returned.
+        assert result.get("status") == "healthy"
+        assert "learned_store" in result
+
+
+
 class TestWebCrawler:
     """Web crawler — fetch, extract, chunk, ingest, and recall."""
 

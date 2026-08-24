@@ -352,8 +352,11 @@ class MemorySkillAdapter(MemoryProtocol):
         try:
             self._ensure_skill()
             h = self._skill.health()
+            mode = h['embedder']['mode']
+            if h.get("embedder", {}).get("degraded"):
+                mode += " DEGRADED"
             return (
-                f"mode={h['embedder']['mode']} "
+                f"mode={mode} "
                 f"learned={h['learned_store']['entry_count']} "
                 f"dialogue={self._skill.count_turns()}"
             )

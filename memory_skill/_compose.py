@@ -151,6 +151,8 @@ class MemorySystem:
             tree=self.tree,
             gaps=self.gaps,
             pending_store=getattr(self, 'pending_store', None),
+            degraded=self.embedder.degraded,
+            degraded_reason=self.embedder.reason,
         )
         ctx = weave(stores, user_message, scene_summary, partner=partner)
         ProtocolGate(self).after_weave(user_message)
@@ -160,10 +162,14 @@ class MemorySystem:
         self.embedder.embed("health")  # trigger lazy-load
         return {
             "status": "healthy",
+            "model_ok": not self.embedder.degraded,
             "embedder": {
                 "loaded": getattr(self.embedder, '_load_attempted', True),
-                "mode": "onnx" if getattr(self.embedder, '_session', None) else "fallback",
+                "mode": self.embedder.mode,
                 "dim": self.config.embedding_dim,
+                "degraded": self.embedder.degraded,
+                "reason": self.embedder.reason,
+                "model_path": self.config.model_path,
             },
             "saw_buffer": {
                 "entry_count": len(self.saw_buffer.get_all()),

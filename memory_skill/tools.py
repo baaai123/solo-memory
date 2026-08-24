@@ -125,7 +125,14 @@ def handle_ingest(skill, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_status(skill, args: dict[str, Any]) -> dict[str, Any]:
-    return skill.health()
+    h = skill.health()
+    if h.get("embedder", {}).get("degraded"):
+        h["warning"] = (
+            "⚠ EMBEDDER DEGRADED — 语义检索/去重/学习判定已降级为 SHA-256 hash"
+            "（无 ONNX 模型）。修复: 运行 ./download_model.sh 下载 bge-large-en-v1.5，"
+            "或 export MEMORY_MODEL_PATH=<模型路径> 后重启。"
+        )
+    return h
 
 
 def handle_feedback(skill, args: dict[str, Any]) -> dict[str, Any]:

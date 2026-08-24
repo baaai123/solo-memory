@@ -71,6 +71,9 @@ def status(ctx: click.Context) -> None:
     click.echo(f"DB: {ctx.obj['db']}")
     click.echo(f"Agent: {ctx.obj['agent'] or '(default)'}")
     click.echo(f"Embedder: {h['embedder']['mode']} ({h['embedder']['dim']}-dim)")
+    if h.get("embedder", {}).get("degraded"):
+        click.echo("⚠ EMBEDDER DEGRADED — 无 ONNX 模型，语义检索/去重/学习判定已降级。"
+                   "运行 ./download_model.sh 修复。")
     click.echo(f"Learned store: {h['learned_store']['entry_count']} entries")
     click.echo(f"Dialogue: {skill.count_turns()} turns")
 

@@ -57,6 +57,18 @@ class FakeEmbedder:
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [self._vector(t) for t in texts]
 
+    @property
+    def mode(self) -> str:
+        return "fake"
+
+    @property
+    def degraded(self) -> bool:
+        return False
+
+    @property
+    def reason(self) -> str | None:
+        return None
+
 
 class InMemoryDialogueStore:
     """Dict-backed dialogue store — no SQLite/FTS."""
