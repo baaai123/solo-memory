@@ -80,7 +80,10 @@ def handle_search(skill, args: dict[str, Any]) -> dict[str, Any]:
     skill.protocol.mark_skill_checked()
     try:
         result = skill.retrieve(query, limit=args.get("limit", 10))
+        from datetime import UTC, datetime
+        query_id = f"q_{datetime.now(UTC):%Y%m%d_%H%M%S}_{hash(query) & 0xFFFF:04x}"
         return {
+            "query_id": query_id,
             "total_candidates": result.total_candidates,
             "results": [
                 {
@@ -142,8 +145,17 @@ def handle_feedback(skill, args: dict[str, Any]) -> dict[str, Any]:
     if not query_id:
         return {"error": "query_id is required"}
     try:
-        skill.learned_store.boost_weight(query_id)
-        return {"status": "feedback_recorded", "outcome": outcome, "cited": cited_ids}
+        boosted: list[str] = []
+        for entry_id in cited_ids:
+            skill.learned_store.boost_weight(entry_id)
+            boosted.append(entry_id)
+        return {
+            "status": "feedback_recorded",
+            "query_id": query_id,
+            "outcome": outcome,
+            "boosted": boosted,
+            "cited": cited_ids,
+        }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
 

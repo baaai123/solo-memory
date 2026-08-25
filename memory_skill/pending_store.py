@@ -40,7 +40,7 @@ class PendingStore:
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
-        self._conn = sqlite3.connect(db_path)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pending_candidates (
