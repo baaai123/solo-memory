@@ -176,11 +176,26 @@ class MemorySystem:
                 "capacity": self.config.saw_buffer_capacity,
             },
             "learned_store": self.learned_store.health(),
+            "importance_llm": {
+                "configured": self._importance_key_configured(),
+                "note": "distill/importance LLM 评分需要 IMPORTANCE_API_KEY（~/.config/memory-skill/.env），未配置时主动学习 distill 不可用，记忆核心不受影响",
+            },
             "config": {
                 "namespace": self.config.namespace,
                 "db_path": self.config.db_path,
             },
         }
+
+    def _importance_key_configured(self) -> bool:
+        """True when IMPORTANCE_API_KEY is available (env or the two .env locations)."""
+        try:
+            from pathlib import Path
+            from dotenv import load_dotenv
+            load_dotenv(Path.home() / ".config" / "memory-skill" / ".env", override=False)
+            load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+        except Exception:
+            pass
+        return bool(os.environ.get("IMPORTANCE_API_KEY", ""))
 
     def consolidate(self) -> int:
         from memory_skill.observation import ObservationConsolidator
