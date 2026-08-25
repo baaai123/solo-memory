@@ -50,6 +50,9 @@ def _load_env() -> None:
         from dotenv import load_dotenv
         load_dotenv(Path(__file__).resolve().parent.parent / ".env",
                     override=False)
+        # pip 部署时包旁没有 .env——从标准用户位置补充（~/.config/memory-skill/.env）
+        load_dotenv(Path.home() / ".config" / "memory-skill" / ".env",
+                    override=False)
     except Exception:
         pass
 

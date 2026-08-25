@@ -116,6 +116,11 @@ def _load_env() -> None:
             _log.debug("Loaded .env from %s", dotenv_path)
         else:
             _log.warning(".env not found at %s — using process env vars only", dotenv_path)
+        # pip 部署时包旁无 .env——从标准用户位置补充（~/.config/memory-skill/.env）
+        user_dotenv = os.path.join(os.path.expanduser("~"), ".config", "memory-skill", ".env")
+        if os.path.isfile(user_dotenv):
+            _ = load_dotenv(user_dotenv, override=False)
+            _log.debug("Loaded .env from %s", user_dotenv)
     except ImportError:
         _log.warning("python-dotenv not installed — using process env vars only")
 
