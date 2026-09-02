@@ -218,14 +218,11 @@ class LearnedStore:
                 f"Entry '{entry_id}' not found in LearnedStore"
             )
 
-        old_meta = existing["metadatas"][0] if existing["metadatas"] else {}
+        old_meta = dict(existing["metadatas"][0]) if existing["metadatas"] else {}
 
         vector = self._embedder.embed(content)
-        new_meta = {
-            **old_meta,
-            **kwargs.get("metadata", {}),
-            "updated_at": time.time(),
-        }
+        new_meta = self._merge_update_metadata(old_meta, kwargs.get("metadata", {}))
+        new_meta["updated_at"] = time.time()
 
         self._collection.upsert(
             ids=[entry_id],
@@ -233,6 +230,40 @@ class LearnedStore:
             documents=[content],
             metadatas=[new_meta],
         )
+
+    @staticmethod
+    def _merge_update_metadata(old_meta: dict, updates: dict) -> dict:
+        """Merge ``update()`` metadata with the stored ChromaDB metadata.
+
+        ChromaDB stores ``MemoryEntry.metadata`` JSON-serialized under the
+        ``ext_metadata_json`` key, while the top-level keys hold the
+        system fields (``weight`` / ``category`` / ``tags_json`` /
+        ``created_at`` / ``updated_at``) read directly by
+        ``_chroma_meta_to_entry``.
+
+        Naively spreading ``updates`` across the top level made
+        ``update(metadata={...})`` keys invisible to ``search()`` /
+        ``list_by_category()`` (they re-read only ``ext_metadata_json``).
+        Fix: route system keys to the top level, everything else into
+        ``ext_metadata_json`` so reads and writes agree.
+        """
+        system_keys = {"weight", "category", "tags_json",
+                       "created_at", "updated_at"}
+        top = dict(old_meta)
+        ext_raw = top.pop("ext_metadata_json", None)
+        try:
+            ext = json.loads(ext_raw) if isinstance(ext_raw, str) else {}
+        except (json.JSONDecodeError, TypeError):
+            ext = {}
+
+        for key, value in updates.items():
+            if key in system_keys:
+                top[key] = value
+            else:
+                ext[key] = value
+
+        top["ext_metadata_json"] = json.dumps(ext, ensure_ascii=False)
+        return top
 
     def delete(self, entry_id: str) -> None:
         """Delete a memory entry from the store.
@@ -245,6 +276,65 @@ class LearnedStore:
             The ID of the entry to delete.
         """
         self._collection.delete(ids=[entry_id])
+
+    def get_entry(self, entry_id: str) -> MemoryEntry | None:
+        """Return a domain-level ``MemoryEntry``, or None when missing.
+
+        Unlike ``get_raw`` (a raw ChromaDB-shaped dict), this reconstructs
+        a proper ``MemoryEntry`` with all metadata (including UI-namespaced
+        keys like ``ui_steps`` / ``ui_status`` that update() now routes into
+        ``ext_metadata_json``). Prefer this over ``get_raw`` in domain code.
+        """
+        try:
+            result = self._collection.get(
+                ids=[entry_id], include=["documents", "metadatas"],
+            )
+        except Exception:
+            return None
+        if not result or not result.get("ids"):
+            return None
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or [{}]
+        return self._chroma_meta_to_entry(
+            entry_id,
+            (docs[0] if docs else None),
+            dict(metas[0] or {}),
+        )
+
+    def get_raw(self, entry_id: str) -> dict | None:
+        """Return an entry's raw document + metadata dict, or None.
+
+        Returns ``{"document": str, "metadata": dict}`` where ``metadata``
+        is the full merged metadata — the top-level ChromaDB keys plus any
+        ``ext_metadata_json`` payload unpacked on top (matching what
+        ``list_by_category`` reconstructs into ``MemoryEntry.metadata``).
+        """
+        try:
+            result = self._collection.get(
+                ids=[entry_id], include=["documents", "metadatas"],
+            )
+        except Exception:
+            return None
+        if not result or not result.get("ids"):
+            return None
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or [{}]
+        meta = dict(metas[0] or {})
+        merged = dict(meta)
+        ext_raw = meta.get("ext_metadata_json")
+        if isinstance(ext_raw, str):
+            try:
+                ext = json.loads(ext_raw)
+                if isinstance(ext, dict):
+                    for k, v in ext.items():
+                        if k not in merged:
+                            merged[k] = v
+            except (ValueError, TypeError):
+                pass
+        return {
+            "document": (docs[0] if docs else "") or "",
+            "metadata": merged,
+        }
 
     def find_duplicate(
         self,
@@ -586,7 +676,8 @@ class LearnedStore:
 
         for i, eid in enumerate(ids_list[0]):
             doc = documents[0][i] if documents and documents[0] else None
-            meta = metadatas[0][i] if metadatas and metadatas[0] else {}
+            raw_meta = metadatas[0][i] if metadatas and metadatas[0] else None
+            meta = dict(raw_meta) if raw_meta else {}
 
             semantic_score: float | None = None
             if distances and distances[0]:

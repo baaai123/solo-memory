@@ -77,7 +77,7 @@ class TestFastWeave:
         related = ms.weave("how do I fix the pip install error", scene_summary="")
         assert "pip install" in related.memory_nudge
 
-        ms._classify_pending = None  # simulate classification completed
+        ms.protocol.mark_classified("chat")
         unrelated = ms.weave("what is the weather like", scene_summary="")
         assert unrelated.memory_nudge == ""
 
@@ -98,14 +98,14 @@ class TestFastWeave:
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         ms.weave("first message", scene_summary="")
-        # Now _classify_pending = "first message"
+        # Now protocol.classify_pending = "first message" (weave armed it)
         with pytest.raises(ClassificationRequired):
             ms.weave("second message", scene_summary="")
 
     def test_weave_allows_when_classified(self):
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         ms.weave("first", scene_summary="")
-        ms._classify_pending = None  # simulate classify()
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave("second", scene_summary="")
         assert ctx.time_context
 
@@ -116,22 +116,22 @@ class TestFastWeave:
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         # Classify as a mission (no declared gaps) -> mission gate is armed.
         handle_classify(ms, {"category": "mission", "note": "build a plugin", "gaps": []})
-        assert ms._mission_pending_check is True
+        assert ms.protocol.mission_pending_check is True
         with pytest.raises(SkillCheckRequired):
             ms.weave("let's start implementing", scene_summary="")
 
         # memory_check_skill satisfies the gate.
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         handle_check_skill(ms, {"skill_name": "dsh plugin"})
-        assert ms._mission_pending_check is False
+        assert ms.protocol.mission_pending_check is False
         ms.weave("start", scene_summary="")
 
         # memory_search also satisfies the gate.
         handle_classify(ms, {"category": "mission", "note": "build another", "gaps": []})
-        assert ms._mission_pending_check is True
-        ms._classify_pending = None
+        assert ms.protocol.mission_pending_check is True
+        ms.protocol.mark_classified("chat")
         handle_search(ms, {"query": "plugin"})
-        assert ms._mission_pending_check is False
+        assert ms.protocol.mission_pending_check is False
         ms.weave("start again", scene_summary="")
 
     def test_classify_non_mission_clears_mission_gate(self):
@@ -139,9 +139,9 @@ class TestFastWeave:
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         handle_classify(ms, {"category": "mission", "note": "mission", "gaps": []})
-        assert ms._mission_pending_check is True
+        assert ms.protocol.mission_pending_check is True
         handle_classify(ms, {"category": "chat", "note": "just chatting"})
-        assert ms._mission_pending_check is False
+        assert ms.protocol.mission_pending_check is False
 
     def test_tier2_isolates_default_fragments(self):
         """tier2 excludes unclassified fragments; structured skill ranks."""
@@ -160,7 +160,7 @@ class TestFastWeave:
             timestamp=datetime.now(),
         ), category="skill", extra_metadata={"title": "FastAPI"})
 
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave("FastAPI 性能", scene_summary="")
         # Structured skill content should surface in tier2, not fragment noise
         assert "FastAPI" in (ctx.tier2_context or "")
@@ -186,7 +186,7 @@ class TestFastWeave:
                 if e.category == "pref"][0]
         ms.learned_store.set_weight(pref.id, 0.85)
 
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave("晚上工作", scene_summary="")
         nudge = ctx.memory_nudge or ""
         # Nudge must surface the structured pref, not the noisy fragment
@@ -203,7 +203,7 @@ class TestFastWeave:
             content="我昨天聊过 QuantumFlux 协议",
             timestamp=datetime.now(),
         ))
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave("QuantumFlux", scene_summary="")
         # Not injected into weave context (it's a default fragment)
         assert "QuantumFlux" not in (ctx.tier2_context or "")
@@ -286,7 +286,7 @@ class TestFastLearning:
         queue = FakeLearningQueue()
         ms.learning_queue = queue
         ms.ingestor._learning_queue = queue
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         queue.enqueue("skill", "Docker Compose", "需要掌握")
         queue.enqueue("mission", "build a plugin", "未拆解")
 
@@ -308,8 +308,8 @@ class TestFastLearning:
         queue = FakeLearningQueue()
         ms.learning_queue = queue
         ms.ingestor._learning_queue = queue
-        ms._classify_pending = None
-        ms._pending_gaps = set()
+        ms.protocol.mark_classified("chat")
+        ms.protocol.mark_classified("chat")
 
         handle_classify(ms, {"category": "skill", "note": "Kubernetes"})
         items = handle_learning_queue(ms, {})["items"]
@@ -330,7 +330,7 @@ class TestFastLearning:
         queue = FakeLearningQueue()
         ms.learning_queue = queue
         ms.ingestor._learning_queue = queue
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
 
         handle_classify(ms, {"category": "chat", "note": "随便聊聊"})
         assert handle_learning_queue(ms, {})["count"] == 0
@@ -442,7 +442,7 @@ class TestFastDistill:
             topic="Rust", summary="用户学了 Rust", evidence=["d1"],
             suggested="skill", confidence=0.8), ms.dialogue_store)
 
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave(user_message="继续", scene_summary="")
         block = ctx.to_prompt_block()
         assert "待审核提炼" in block
@@ -452,7 +452,7 @@ class TestFastDistill:
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
         ms.ingestor.ingest_dialogue(DialogueTurn(
             id="d1", role="user", content="普通对话", timestamp=datetime.now()))
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave(user_message="继续", scene_summary="")
         assert "待审核提炼" not in ctx.to_prompt_block()
 
@@ -505,7 +505,7 @@ class TestFastDistill:
             timestamp=datetime.now(),
         ), category="conclusion", extra_metadata={"title": "编码根因"})
 
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave(user_message="编码", scene_summary="")
         assert "历史结论" in ctx.to_prompt_block()
         assert "编码根因" in ctx.to_prompt_block()
@@ -526,7 +526,7 @@ class TestFastDistill:
             content="# FastAPI\n\n快速 API 框架", timestamp=datetime.now(),
         ), category="skill", extra_metadata={"title": "FastAPI 技能"})
 
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         ctx = ms.weave(user_message="FastAPI", scene_summary="")
         block = ctx.to_prompt_block()
         # The [近期记忆] slot must show the structured skill, not the fragment
@@ -574,7 +574,7 @@ class TestEmbedderBanner:
         from memory_skill.weaver import weave
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         stores = self._stores(ms, degraded=True, reason="missing model")
         ctx = weave(stores, user_message="hello", scene_summary="")
         block = ctx.to_prompt_block()
@@ -585,7 +585,7 @@ class TestEmbedderBanner:
         from memory_skill.weaver import weave
 
         ms = build_fast_system(MemorySkillConfig(db_path=":memory:"))
-        ms._classify_pending = None
+        ms.protocol.mark_classified("chat")
         stores = self._stores(ms, degraded=False, reason=None)
         ctx = weave(stores, user_message="hello", scene_summary="")
         assert ctx.embedder_banner == ""

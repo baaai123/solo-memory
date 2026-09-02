@@ -289,8 +289,8 @@ class TestWeave:
     @pytest.fixture(autouse=True)
     def _reset_weave_gate(self, skill: MemorySkill) -> None:
         """Reset the classify gate so each weave test starts clean."""
-        skill._classify_pending = None
-        skill._pending_gaps = set()
+        skill.protocol.mark_classified("chat")
+        skill.protocol.mark_classified("chat")
 
     def test_weave_with_memories(self, skill: MemorySkill) -> None:
         """After ingest, weave returns non-empty context."""
@@ -403,12 +403,14 @@ class TestRetrieve:
 class TestTreeNavigation:
     """LLM-navigated tree context retrieval (calls DeepSeek API)."""
 
+    @_NEEDS_LLM
     def test_navigate_project(self, tree: TreeManager) -> None:
         """'我的 RAG 项目进展' → should navigate to assistant_task."""
         ctx = tree.navigate("我的 RAG 项目进展怎么样")
         assert ctx is not None
         logger.info("Navigate 'RAG': %s", ctx[:300])
 
+    @_NEEDS_LLM
     def test_navigate_preference(self, tree: TreeManager) -> None:
         """'我喜欢喝什么' → should navigate to user_pref."""
         ctx = tree.navigate("我喜欢喝什么饮料")
@@ -529,6 +531,7 @@ class TestImportance:
         assert persist is False, f"Expected persist=False for '哈哈哈'"
         logger.info("Emoji trivial: %.2f (persist=%s)", score, persist)
 
+    @_NEEDS_LLM
     def test_llm_importance_gate(self) -> None:
         """LLMImportanceGate evaluates with real DeepSeek API."""
         from memory_skill.importance_llm import LLMImportanceGate
@@ -539,6 +542,7 @@ class TestImportance:
         assert 0.0 <= score <= 1.0
         logger.info("LLM gate: cat=%s score=%.2f persist=%s", category, score, persist)
 
+    @_NEEDS_LLM
     def test_llm_importance_trivial(self) -> None:
         """LLMImportanceGate evaluates 'ok'."""
         from memory_skill.importance_llm import LLMImportanceGate
@@ -619,7 +623,7 @@ class TestMCPTools:
         """ToolHandler.weave() auto-ingests + returns context."""
         handler = self._make_handler(skill)
         # weave is gated on the previous turn being classified — classify first
-        skill._classify_pending = None
+        skill.protocol.mark_classified("chat")
         result = handler.handle("memory_weave", {
             "user_message": "测试 MCP weave",
             "scene_summary": "MCP 协议层测试",
@@ -692,8 +696,8 @@ class TestTransparentProxy:
 
         sk = MemorySkill(MemorySkillConfig(db_path=tmp_db, agent_name="proxy_test"))
         # Proxy internally calls auto_context → weave → classify gate must be clean
-        sk._classify_pending = None
-        sk._pending_gaps = set()
+        sk.protocol.mark_classified("chat")
+        sk.protocol.mark_classified("chat")
         sk.ingest(DialogueTurn(
             id="proxy_pre", role="user",
             content="我用 Python 写了一个 RAG 项目", timestamp=utcnow(),
@@ -1087,6 +1091,7 @@ class TestCapabilityGap:
 class TestActiveLearning:
     """Knowledge synthesis + learning decider + learn task."""
 
+    @_NEEDS_LLM
     def test_synth_with_mock_chunks(self, api_config: dict[str, str]) -> None:
         """Synthesis with known crawl data produces entries."""
         from memory_skill.knowledge_synth import KnowledgeSynth
@@ -1102,6 +1107,7 @@ class TestActiveLearning:
         logger.info("Synth: %d facts, verified=%d, conflicts=%d",
                      result.total_facts, result.verified_count, result.conflict_count)
 
+    @_NEEDS_LLM
     def test_synth_empty_input(self, api_config: dict[str, str]) -> None:
         """Empty input returns empty result."""
         from memory_skill.knowledge_synth import KnowledgeSynth

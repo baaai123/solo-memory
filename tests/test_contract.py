@@ -24,7 +24,8 @@ def _make_turn(turn_id: str, content: str, role: str = "user") -> DialogueTurn:
     return DialogueTurn(id=turn_id, role=role, content=content, timestamp=_naive_now())
 
 
-def _make_entry(entry_id: str, content: str, category: str = "default") -> MemoryEntry:
+def _make_entry(entry_id: str, content: str, category: str = "default",
+                metadata: dict | None = None) -> MemoryEntry:
     now = _naive_now()
     return MemoryEntry(
         id=entry_id,
@@ -34,7 +35,7 @@ def _make_entry(entry_id: str, content: str, category: str = "default") -> Memor
         weight=0.5,
         category=category,
         tags=[],
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -135,9 +136,39 @@ class TestLearnedStoreContract:
         results = store.search("topic", limit=3)
         assert len(results) <= 3
 
+    def test_update_metadata_visible_after_search(self, store):
+        """update() metadata keys must be readable back via search.
+
+        Regression guard: a naive ``{**old_meta, **metadata}`` merge put
+        new keys on the ChromaDB top level, where ``_chroma_meta_to_entry``
+        never looks (it reads only ``ext_metadata_json``) — so search lost
+        them while the fake kept them.
+        """
+        store.insert(_make_entry("e1", "original content",
+                                 metadata={"title": "旧标题", "foo": "bar"}))
+        store.update("e1", "new content",
+                     metadata={"title": "新标题", "baz": "qux", "weight": 0.8})
+
+        results = store.search("new content", limit=5)
+        entry = next(e for e in results if e.id == "e1")
+        assert entry.metadata.get("baz") == "qux"
+        assert entry.metadata.get("title") == "新标题"
+        assert entry.metadata.get("foo") == "bar"  # untouched old key
+        assert entry.weight == 0.8  # system key routed to top level
+
+    def test_update_keeps_existing_ext_metadata(self, store):
+        """Repeated updates accumulate keys instead of clobbering."""
+        store.insert(_make_entry("e1", "content",
+                                 metadata={"title": "标题", "a": 1}))
+        store.update("e1", "content", metadata={"b": 2})
+        store.update("e1", "content", metadata={"c": 3})
+        entry = store.search("content", limit=5)[0]
+        assert entry.metadata.get("a") == 1
+        assert entry.metadata.get("b") == 2
+        assert entry.metadata.get("c") == 3
+
 
 # ── Ingest pipeline contracts (ADR-0001) ────────────────────────────────────────
-
 class TestIngestPipelineContract:
     """Pure-storage ingest: no LLM stages, writes to both stores."""
 

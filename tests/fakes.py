@@ -7,6 +7,7 @@ test suite (seconds instead of minutes) without real infrastructure.
 
 from __future__ import annotations
 
+import json
 import math
 import uuid
 from datetime import UTC, datetime
@@ -181,16 +182,29 @@ class FakeLearnedStore:
         new_meta = dict(entry.metadata or {})
         meta = kwargs.get("metadata")
         if isinstance(meta, dict):
-            new_meta.update(meta)
-        weight = kwargs.get("weight", entry.weight)
+            # Must mirror real _merge_update_metadata: system keys live on
+            # entry fields, everything else merges into metadata dict.
+            weight = meta.get("weight", entry.weight)
+            category = meta.get("category", entry.category)
+            tags_raw = meta.get("tags_json", None)
+            tags = tags_raw if tags_raw is None else list(json.loads(tags_raw))
+            for key, value in meta.items():
+                if key not in ("weight", "category", "tags_json",
+                               "created_at", "updated_at"):
+                    new_meta[key] = value
+        else:
+            weight = entry.weight
+            category = entry.category
+            tags = None
+        weight = kwargs.get("weight", weight)
         self._entries[entry_id] = MemoryEntry(
             id=entry.id,
             content=content,
             created_at=entry.created_at,
             updated_at=kwargs.get("updated_at", datetime.now(UTC)),
             weight=weight,
-            category=entry.category,
-            tags=list(entry.tags or []),
+            category=category,
+            tags=list(tags if tags is not None else (entry.tags or [])),
             metadata=new_meta,
             is_system=entry.is_system,
         )
@@ -249,6 +263,18 @@ class FakeLearnedStore:
                      if getattr(e, key) else 0.0,
                      reverse=descending)
         return matches if limit <= 0 else matches[:limit]
+
+    def get_entry(self, entry_id: str):
+        return self._entries.get(entry_id)
+
+    def get_raw(self, entry_id: str) -> dict | None:
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            return None
+        return {
+            "document": entry.content,
+            "metadata": dict(entry.metadata or {}),
+        }
 
     def set_weight(self, entry_id: str, weight: float) -> None:
         entry = self._entries.get(entry_id)
