@@ -71,8 +71,10 @@ class WeaverStores:
     tree: TreeManagerProtocol | None = None
     gaps: list = field(default_factory=list)
     pending_store: object = None
+    mission_store: object = None
     degraded: bool = False
     degraded_reason: str | None = None
+    character: object = None  # CharacterStore — role whitelist source (Unit 4)
 
 
 @dataclass
@@ -182,6 +184,7 @@ def weave(
     scene_summary: str = "",
     *,
     partner: str | None = None,
+    character_role: str | None = None,
 ) -> WeaveContext:
     """Assemble layered memory context from all stores.
 
@@ -189,6 +192,11 @@ def weave(
       compact (recent <3 turns AND 0 total stored): tier1 only (~80 tokens)
       standard (3-10 recent OR has stored history): tier1 + tier2 (~300 tokens)
       deep (>10 recent): tier1 + tier2 + heartbeat check
+
+    *character_role* (Unit 4): the bound character id, when the agent is
+    playing a character.  Its reference set becomes a whitelist applied to
+    every learned-memory retrieval; ``None`` keeps unbound behaviour
+    unchanged (R11).  A failed reference lookup degrades to ``None``.
 
     Note: "recent" = last 5 minutes (via count_recent(), not total stored).
     "total stored" = all turns ever (via count()).  These are now DIFFERENT,
@@ -199,6 +207,7 @@ def weave(
     ctx = WeaveContext(time_context=f"[现在时间] {now.strftime('%Y-%m-%d %H:%M:%S')}")
     ns = _resolve_namespace(stores.agent_name, stores.namespace, partner)
     turn_count = _count_recent_turns(stores.dialogue_store)
+    memory_ids = _resolve_role_memory_ids(stores, character_role)
 
     ctx.tier1_context = _build_tier1(
         stores.dialogue_store, stores.saw_buffer, stores.agent_name, scene_summary)
@@ -223,7 +232,7 @@ def weave(
     if turn_count < 3:
         turn_count = 3
 
-    _apply_standard_blocks(ctx, stores, user_message, ns, partner)
+    _apply_standard_blocks(ctx, stores, user_message, ns, partner, memory_ids)
 
     # deep depth adds the heartbeat check: surface a second-pass nudge when a
     # high-weight memory is relevant to the current message.
@@ -232,29 +241,60 @@ def weave(
     return ctx
 
 
+def _resolve_role_memory_ids(
+    stores: WeaverStores, character_role: str | None,
+) -> set[str] | None:
+    """Resolve the memory whitelist for a bound character role.
+
+    ``None`` when unbound (keeps existing behaviour); a failed lookup also
+    degrades to ``None`` with a log line so a SQLite hiccup never blocks
+    the weave (plan risk table).
+    """
+    if not character_role or stores.character is None:
+        return None
+    try:
+        return set(stores.character.list_memories(character_role))
+    except Exception as exc:
+        _logger.warning("Character memory lookup failed for %r: %s",
+                        character_role, exc)
+        return None
+
+
 def _apply_standard_blocks(
     ctx: WeaveContext,
     stores: WeaverStores,
     user_message: str,
     ns: str,
     partner: str | None,
+    memory_ids: set[str] | None = None,
 ) -> None:
     """Populate the standard context slots shared by every non-compact weave.
 
     One call site instead of two copy-pasted branches; adding a context slot
     now means editing a single line here rather than both branches.
+
+    *memory_ids* is the character role whitelist (Unit 4) applied to every
+    learned-memory retrieval; ``None`` keeps unbound behaviour unchanged.
     """
     if user_message:
         ctx.tier2_context = _build_tier2(
-            stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns)
-        ctx.historic_hint = _build_historic_hint(stores.retriever, user_message)
+            stores.retriever, stores.dialogue_store, stores.agent_name, user_message, ns,
+            role_memory_ids=memory_ids)
+        ctx.historic_hint = _build_historic_hint(
+            stores.retriever, user_message, role_memory_ids=memory_ids)
     ctx.memory_nudge = _build_nudge(stores.learned_store, user_message)
-    ctx.skill_context = _build_skill_context(stores.retriever, user_message)
-    ctx.mission_context = _build_mission_context(stores.retriever, user_message)
-    ctx.pref_context = _build_pref_context(stores.retriever)
-    ctx.pers_context = _build_pers_context(stores.retriever)
-    ctx.conclusion_context = _build_conclusion_context(stores.retriever)
-    ctx.title_preview = _build_title_preview(stores.retriever)
+    ctx.skill_context = _build_skill_context(
+        stores.retriever, user_message, role_memory_ids=memory_ids)
+    ctx.mission_context = _build_mission_context(
+        stores, user_message, role_memory_ids=memory_ids)
+    ctx.pref_context = _build_pref_context(
+        stores.retriever, role_memory_ids=memory_ids)
+    ctx.pers_context = _build_pers_context(
+        stores.retriever, role_memory_ids=memory_ids)
+    ctx.conclusion_context = _build_conclusion_context(
+        stores.retriever, role_memory_ids=memory_ids)
+    ctx.title_preview = _build_title_preview(
+        stores.retriever, role_memory_ids=memory_ids)
     ctx.tree_context = _build_tree_context(stores.tree, user_message)
     ctx.tree_nav = _build_tree_nav(stores.tree, user_message)
 
@@ -281,7 +321,8 @@ def _build_tier1(dialogue: DialogueSource, saw: SawBufferProtocol,
 
 
 def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
-                 agent_name: str, user_message: str, ns: str = "") -> str:
+                 agent_name: str, user_message: str, ns: str = "",
+                 role_memory_ids: set[str] | None = None) -> str:
     """Build tier2 context — conversation units with surrounding dialogue.
 
     V9: Each retrieved fact is expanded into a conversation unit that shows
@@ -294,14 +335,16 @@ def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
     try:
         if ns and ns != "default":
             envelope = retriever.retrieve(
-                user_message, limit=4, filters={"category": ns})
+                user_message, limit=4, filters={"category": ns},
+                role_memory_ids=role_memory_ids)
         else:
             # Isolate unclassified fragments: semantic leg searches
             # structured memory only; BM25 leg still supplies the raw
             # dialogue units needed for context expansion.
             envelope = retriever.retrieve(
                 user_message, limit=4,
-                filters={"category": {"$ne": "default"}})
+                filters={"category": {"$ne": "default"}},
+                role_memory_ids=role_memory_ids)
     except Exception as e:
         _logger.warning("Tier2 retrieval failed: %s", e)
         return ""
@@ -384,6 +427,29 @@ def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
     return ""
 
 
+def _high_weight_entries(memory: MemorySource, user_message: str = "") -> list:
+    """High-weight, non-dialogue entries, optionally relevance-gated.
+
+    Shared by nudge rendering and the second-pass gate so both agree on
+    which entries qualify. Weight >= threshold, category != default, and
+    when a user_message is given, distinctive-token overlap.
+    """
+    try:
+        entries = memory.search(
+            "", limit=_NUDGE_MAX_ITEMS * 3,
+            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD},
+                     "category": {"$ne": "default"}})
+    except Exception as e:
+        _logger.debug("High-weight retrieval failed: %s", e)
+        return []
+    high = [e for e in entries
+            if e.weight >= _NUDGE_WEIGHT_THRESHOLD
+            and e.category != "default"]
+    if user_message.strip():
+        high = [e for e in high if token_overlap(user_message, e.content)]
+    return high
+
+
 def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
     """Build nudge with behavioral intensity based on weight.
 
@@ -398,27 +464,9 @@ def _build_nudge(memory: MemorySource, user_message: str = "") -> str:
     ``user_message`` is given, the gate is skipped (keep historical
     behaviour so empty-context weaves still surface critical items).
     """
-    try:
-        entries = memory.search(
-            "", limit=_NUDGE_MAX_ITEMS * 3,
-            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD},
-                     "category": {"$ne": "default"}})
-    except Exception as e:
-        _logger.debug("Nudge retrieval failed: %s", e)
-        return ""
-
-    # Isolate unclassified fragments: nudge should surface structured
-    # memory (skills/prefs/pers), not raw dialogue noise.
-    high = [e for e in entries
-            if e.weight >= _NUDGE_WEIGHT_THRESHOLD
-            and e.category != "default"]
+    high = _high_weight_entries(memory, user_message)
     if not high:
         return ""
-
-    if user_message.strip():
-        high = [e for e in high if token_overlap(user_message, e.content)]
-        if not high:
-            return ""
 
     # Sort by weight descending
     high.sort(key=lambda e: e.weight, reverse=True)
@@ -463,25 +511,10 @@ def _count_recent_turns(dialogue: DialogueSource) -> int:
 def _has_high_weight(memory: MemorySource, user_message: str = "") -> bool:
     """True when a relevant high-weight entry exists (needs_second_pass gate).
 
-    Mirrors the candidate-8 relevance gate of ``_build_nudge`` so the deep
-    branch's second-pass flag agrees with what nudge would actually surface.
+    Reuses ``_high_weight_entries`` so the deep branch's second-pass flag
+    agrees with what nudge would actually surface.
     """
-    try:
-        entries = memory.search(
-            "", limit=5,
-            filters={"weight": {"$gte": _NUDGE_WEIGHT_THRESHOLD},
-                     "category": {"$ne": "default"}})
-        high = [e for e in entries
-                if e.weight >= _NUDGE_WEIGHT_THRESHOLD
-                and e.category != "default"]
-        if not high:
-            return False
-        if user_message.strip():
-            return any(token_overlap(user_message, e.content) for e in high)
-        return True
-    except Exception as e:
-        _logger.debug("High-weight check failed: %s", e)
-        return False
+    return bool(_high_weight_entries(memory, user_message))
 
 
 def _build_tree_context(tree, user_message: str) -> str:
@@ -520,6 +553,7 @@ def _safe_retrieve(
     query: str,
     category: object,
     limit: int,
+    role_memory_ids: set[str] | None = None,
 ):
     """Retrieve with the category filter, tolerating backend failures.
 
@@ -528,17 +562,21 @@ def _safe_retrieve(
     implementation, six call sites.
     """
     try:
-        result = retriever.retrieve(query, limit=limit, filters={"category": category})
+        result = retriever.retrieve(
+            query, limit=limit, filters={"category": category},
+            role_memory_ids=role_memory_ids)
     except Exception:
         return []
     return result.entries if result.entries else []
 
 
-def _build_skill_context(retriever: RetrievalSource, user_message: str) -> str:
+def _build_skill_context(retriever: RetrievalSource, user_message: str,
+                         role_memory_ids: set[str] | None = None) -> str:
     """Retrieve relevant skill titles for agent awareness."""
     if not user_message:
         return ""
-    entries = _safe_retrieve(retriever, user_message, "skill", 5)
+    entries = _safe_retrieve(retriever, user_message, "skill", 5,
+                             role_memory_ids=role_memory_ids)
     titles = []
     for e in entries[:5]:
         t = e.content.split('\n')[0].lstrip('# ')[:40]
@@ -549,40 +587,35 @@ def _build_skill_context(retriever: RetrievalSource, user_message: str) -> str:
     return "[已掌握的技能]\n  · " + "\n  · ".join(titles)
 
 
-def _build_mission_context(retriever: RetrievalSource, user_message: str) -> str:
-    entries = _safe_retrieve(retriever, user_message, "mission", 2)
+def _build_mission_context(stores, user_message: str,
+                           role_memory_ids: set[str] | None = None) -> str:
+    """Render open missions as agent directives.
+
+    Missions are retrieved by relevance to the current message, then their
+    steps are read from the structured ``ui_steps`` metadata via the
+    MissionStore (single source of truth). No regex parsing of content —
+    the steps schema lives in ``mission.MissionStore`` only.
+    """
+    mission_store = getattr(stores, "mission_store", None)
+    if mission_store is None:
+        return ""
+    entries = _safe_retrieve(stores.retriever, user_message, "mission", 2,
+                             role_memory_ids=role_memory_ids)
     if not entries:
         return ""
-    import re
     lines = ["[当前任务]"]
     for e in entries[:2]:
         title = e.content.split('\n')[0].lstrip('# ')[:50]
         lines.append(f"\n→ {title}")
-        steps = re.split(r'\n##\s*', '\n' + e.content)
-        for step_block in steps[1:]:
-            step_lines = step_block.strip().split('\n')
-            header = step_lines[0]
-            m = re.match(r'(.+?)\s*\[(done|doing|pending)\]', header)
-            if not m:
-                continue
-            step_name, step_status = m.group(1).strip(), m.group(2)
-            marks = {'done': '✓', 'doing': '●', 'pending': '○'}
-            mark = marks.get(step_status, '○')
-            skill_name = ""
-            for sl in step_lines:
-                if sl.strip().startswith('skill:'):
-                    skill_name = sl.split(':', 1)[1].strip()
-                    break
+        mission = mission_store.get(e.id)
+        if mission is None:
+            continue
+        for step in mission.steps:
+            mark = '✓' if step.done else '○'
             skill_hint = ""
-            if skill_name:
-                has = retriever.retrieve(skill_name, limit=5, filters={"category": "skill"})
-                found = False
-                for sk in has.entries:
-                    if skill_name.lower() in sk.content.lower()[:100]:
-                        found = True
-                        break
-                skill_hint = f" → {skill_name} {'✅' if found else '⚠'}"
-            lines.append(f"  {mark} {step_name}{skill_hint}")
+            if getattr(step, "skill_title", ""):
+                skill_hint = f" → {step.skill_title}"
+            lines.append(f"  {mark} {step.text}{skill_hint}")
     return "\n".join(lines)
 
 
@@ -644,8 +677,10 @@ def _build_pending_context(pending_store) -> str:
     return "\n".join(lines)
 
 
-def _build_pref_context(retriever: RetrievalSource) -> str:
-    entries = _safe_retrieve(retriever, "all", "pref", 10)
+def _build_pref_context(retriever: RetrievalSource,
+                        role_memory_ids: set[str] | None = None) -> str:
+    entries = _safe_retrieve(retriever, "all", "pref", 10,
+                             role_memory_ids=role_memory_ids)
     if not entries:
         return ""
     lines = ["[用户偏好]"]
@@ -654,8 +689,10 @@ def _build_pref_context(retriever: RetrievalSource) -> str:
     return "\n".join(lines)
 
 
-def _build_pers_context(retriever: RetrievalSource) -> str:
-    entries = _safe_retrieve(retriever, "all", "pers", 10)
+def _build_pers_context(retriever: RetrievalSource,
+                        role_memory_ids: set[str] | None = None) -> str:
+    entries = _safe_retrieve(retriever, "all", "pers", 10,
+                             role_memory_ids=role_memory_ids)
     if not entries:
         return ""
     cards = [e for e in entries if e.content.startswith('# ')]
@@ -663,14 +700,16 @@ def _build_pers_context(retriever: RetrievalSource) -> str:
     return "[人格特征]\n  · " + latest.content
 
 
-def _build_conclusion_context(retriever: RetrievalSource) -> str:
+def _build_conclusion_context(retriever: RetrievalSource,
+                              role_memory_ids: set[str] | None = None) -> str:
     """Dedicated injection channel for conclusion entries.
 
     Conclusions (knowledge/root-cause judgments) previously shared the
     unfiltered [近期记忆] slot and had no guaranteed exposure.  This
     gives them their own slot, newest first.
     """
-    entries = _safe_retrieve(retriever, "all", "conclusion", 10)
+    entries = _safe_retrieve(retriever, "all", "conclusion", 10,
+                             role_memory_ids=role_memory_ids)
     if not entries:
         return ""
     lines = ["[历史结论]"]
@@ -681,10 +720,12 @@ def _build_conclusion_context(retriever: RetrievalSource) -> str:
     return "\n".join(lines)
 
 
-def _build_title_preview(retriever: RetrievalSource) -> str:
+def _build_title_preview(retriever: RetrievalSource,
+                         role_memory_ids: set[str] | None = None) -> str:
     try:
         result = retriever.retrieve(
-            "all", limit=5, filters={"category": {"$ne": "default"}})
+            "all", limit=5, filters={"category": {"$ne": "default"}},
+            role_memory_ids=role_memory_ids)
     except Exception:
         return ""
     entries = result.entries if result.entries else []
@@ -706,7 +747,8 @@ _HISTORIC_HINT_RECENT_SKIP_MINUTES: int = 10
 _HISTORIC_HINT_MAX_TITLE: int = 40
 
 
-def _build_historic_hint(retriever: RetrievalSource, user_message: str) -> str:
+def _build_historic_hint(retriever: RetrievalSource, user_message: str,
+                         role_memory_ids: set[str] | None = None) -> str:
     """Detect a strongly-related past memory and hint the agent to
     actively `memory_search` it — WITHOUT injecting its content.
 
@@ -724,7 +766,8 @@ def _build_historic_hint(retriever: RetrievalSource, user_message: str) -> str:
     if not user_message:
         return ""
     try:
-        result = retriever.retrieve(user_message, limit=6)
+        result = retriever.retrieve(
+            user_message, limit=6, role_memory_ids=role_memory_ids)
     except Exception as e:
         _logger.debug("Historic hint retrieval failed: %s", e)
         return ""

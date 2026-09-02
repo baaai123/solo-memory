@@ -58,38 +58,10 @@ class MemorySystem:
     retriever: object = None
     learning_queue: object = None
     pending_store: object = None
+    mission_store: object = None
+    character: object = None
     protocol: object = None
     _composed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-    # Backward-compatible view of the protocol state. New code should go
-    # through ``self.protocol``; these properties keep existing callers and
-    # tests working while the migration lands.
-    @property
-    def _classify_pending(self):
-        return self.protocol.classify_pending if self.protocol else None
-
-    @_classify_pending.setter
-    def _classify_pending(self, value):
-        if self.protocol:
-            self.protocol.classify_pending = value
-
-    @property
-    def _pending_gaps(self):
-        return self.protocol.pending_gaps if self.protocol else set()
-
-    @_pending_gaps.setter
-    def _pending_gaps(self, value):
-        if self.protocol:
-            self.protocol.pending_gaps = value
-
-    @property
-    def _mission_pending_check(self):
-        return self.protocol.mission_pending_check if self.protocol else False
-
-    @_mission_pending_check.setter
-    def _mission_pending_check(self, value):
-        if self.protocol:
-            self.protocol.mission_pending_check = value
 
     def __init__(self, config: MemorySkillConfig | None = None, **overrides):
         """Create via ``MemorySystem(config)`` or ``MemorySystem(field=value).``
@@ -114,8 +86,18 @@ class MemorySystem:
         Classification, title generation, conclusion extraction, and
         mission decomposition are the main agent's responsibility.
         This method only writes the turn to both stores (dialogue + learned).
+
+        Unit 4: when this system's agent is bound to a character role, the
+        turn is double-written — the stored entry is referenced from the
+        role and its metadata carries ``source_role`` — so role-scoped
+        weave can see it.  Unbound systems keep the original behaviour.
         """
-        return self.ingestor.ingest_dialogue(turn)
+        role = self._resolve_character_role()
+        return self.ingestor.ingest_dialogue(
+            turn,
+            extra_metadata={"source_role": role} if role else None,
+            character_role=role,
+        )
 
     def retrieve(self, query: str, limit: int = 10, filters=None,
                   partner: str | None = None):
@@ -127,6 +109,18 @@ class MemorySystem:
     def boost_weight(self, entry_id: str, delta: float = 0.05, cap: float = 0.95) -> float:
         """Boost a memory entry's weight (delegates to learned_store)."""
         return self.learned_store.boost_weight(entry_id, delta, cap)
+
+    def delete_entry(self, entry_id: str) -> None:
+        """Delete a global memory entry and cascade-remove its references.
+
+        Removes the entry from the learned store, then removes the memory's
+        references from every character so no orphan reference rows remain
+        (Unit 2 of the character-store backend plan).  Both steps are
+        idempotent; deleting an unreferenced or unknown entry is a no-op.
+        """
+        self.learned_store.delete(entry_id)
+        if getattr(self, "character", None) is not None:
+            self.character.remove_all_memory(entry_id)
 
     def ingest_screen(self, entry) -> object:
         return self.ingestor.ingest_screen(
@@ -151,12 +145,50 @@ class MemorySystem:
             tree=self.tree,
             gaps=self.gaps,
             pending_store=getattr(self, 'pending_store', None),
+            mission_store=self._ensure_mission_store(),
             degraded=self.embedder.degraded,
             degraded_reason=self.embedder.reason,
+            character=getattr(self, 'character', None),
         )
-        ctx = weave(stores, user_message, scene_summary, partner=partner)
+        ctx = weave(stores, user_message, scene_summary, partner=partner,
+                    character_role=self._resolve_character_role())
         ProtocolGate(self).after_weave(user_message)
         return ctx
+
+    def _resolve_character_role(self) -> str | None:
+        """Resolve the character id this system's agent is bound to.
+
+        ``None`` when there is no character store, no config, no binding,
+        or the lookup fails (degrade with a log line — never block the
+        call site).  Shared by ``weave`` and ``ingest`` (Unit 4).
+        """
+        character = getattr(self, "character", None)
+        config = getattr(self, "config", None)
+        if character is None or config is None:
+            return None
+        try:
+            return character.get_agent_role(config.agent_name)
+        except Exception as exc:
+            _logger.warning("Character role resolution failed for %r: %s",
+                            config.agent_name, exc)
+            return None
+
+    def _ensure_mission_store(self) -> object | None:
+        """Lazily build (and cache) the MissionStore on this system.
+
+        Returns None when the stores it needs are unavailable (e.g. in
+        minimal test compositions), so callers can skip mission rendering.
+        """
+        if getattr(self, "mission_store", None) is not None:
+            return self.mission_store
+        if self.learned_store is None:
+            return None
+        from memory_skill.mission import MissionStore
+        self.mission_store = MissionStore(
+            learned_store=self.learned_store,
+            learning_queue=getattr(self, "learning_queue", None),
+        )
+        return self.mission_store
 
     def health(self) -> dict:
         self.embedder.embed("health")  # trigger lazy-load
@@ -330,6 +362,7 @@ class MemorySystem:
 
 def _build_system(config: MemorySkillConfig) -> MemorySystem:
     """Create a fully assembled MemorySystem from config."""
+    from memory_skill.character_store import CharacterStore
     from memory_skill.dialogue_store import DialogueStore
     from memory_skill.embedder import Embedder
     from memory_skill.ingestor import Ingestor
@@ -348,10 +381,14 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
                           learned_store=learned_store)
     learning_queue = _build_learning_queue(config) if config.tree_enabled else None
     pending_store = PendingStore(config.db_path) if config.tree_enabled else None
+    character_store = CharacterStore(
+        db_path=getattr(config, "character_db_path", None) or config.db_path
+    )
     ingestor = Ingestor(config=config, saw_buffer=saw_buffer,
                         dialogue_store=dialogue_store,
                         learned_store=learned_store, embedder=embedder,
-                        tree=tree, learning_queue=learning_queue)
+                        tree=tree, learning_queue=learning_queue,
+                        character_store=character_store)
 
     ms = object.__new__(MemorySystem)
     ms.__dict__.update(
@@ -359,6 +396,7 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
         dialogue_store=dialogue_store, learned_store=learned_store,
         tree=tree, ingestor=ingestor, retriever=retriever,
         learning_queue=learning_queue, pending_store=pending_store,
+        character=character_store,
         protocol=ProtocolState(),
         _composed_at=datetime.now(UTC),
     )

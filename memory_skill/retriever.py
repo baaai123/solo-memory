@@ -107,6 +107,7 @@ class Retriever:
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        role_memory_ids: set[str] | None = None,
     ) -> MemoryEnvelope:
         """Retrieve memories by fusing 3 signals via RRF.
 
@@ -119,6 +120,13 @@ class Retriever:
         filters:
             Optional ChromaDB metadata filters (passed to ``learned_store``
             only; ``dialogue_store`` does not support metadata filtering).
+        role_memory_ids:
+            Optional whitelist of memory ids visible to a bound character
+            role.  When provided, both legs are filtered so only entries
+            whose id is in the set reach the candidate pool — the rest of
+            global memory is invisible (R10).  An empty set yields an empty
+            envelope.  ``None`` (default) keeps the unbound behavior
+            unchanged (R11).
 
         Returns
         -------
@@ -181,6 +189,21 @@ class Retriever:
                 bm25_entries = [
                     e for e in bm25_entries if e.category == wanted
                 ]
+
+        # ── 2b. Role whitelist (character-bound retrieval) ───────────────
+        # A bound character role makes only its referenced memories visible.
+        # The whitelist holds learned-store ids; BM25 entries mirror the
+        # ``dialogue:<id>`` learned-id format, so a referenced memory that
+        # also matched BM25 survives while unreferenced turns are dropped.
+        # Applied to both legs before candidate merging so RRF ranks only
+        # visible memories.
+        if role_memory_ids is not None:
+            semantic_entries = [
+                e for e in semantic_entries if e.id in role_memory_ids
+            ]
+            bm25_entries = [
+                e for e in bm25_entries if e.id in role_memory_ids
+            ]
 
         # ── 3. Build candidate set (union, dedup by id) ───────────────────
         now = utcnow()

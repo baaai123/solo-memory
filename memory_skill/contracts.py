@@ -226,6 +226,7 @@ class MemorySkillConfig:
 
     # ── Storage ───────────────────────────────────────────────────────────
     db_path: str = "memory.db"
+    character_db_path: str | None = None  # CharacterStore SQLite file; None → db_path
     max_learned_entries: int = 100_000
 
     # ── Importance gate ───────────────────────────────────────────────────

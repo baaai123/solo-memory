@@ -39,6 +39,7 @@ from memory_skill.contracts import (
 import numpy as np
 
 if TYPE_CHECKING:
+    from memory_skill.character_store import CharacterStore
     from memory_skill.contracts import MemorySkillConfig
 
 
@@ -121,6 +122,10 @@ class Ingestor:
     learned_store: LearnedStoreProtocol
     embedder: EmbedderProtocol
     tree: TreeManagerProtocol | None
+    character_store: CharacterStore | None
+        Optional store for the character double-write hook (Unit 4). When
+        set, ``ingest_dialogue(character_role=...)`` references the stored
+        entry from the bound character role so role-scoped weave sees it.
     """
 
     def __init__(
@@ -132,6 +137,7 @@ class Ingestor:
         embedder: EmbedderProtocol,
         tree: TreeManagerProtocol | None = None,
         learning_queue=None,
+        character_store: CharacterStore | None = None,
     ) -> None:
         self._config = config
         self._saw_buffer = saw_buffer
@@ -141,6 +147,7 @@ class Ingestor:
         self._embedder = embedder
         self._tree = tree
         self._learning_queue = learning_queue
+        self._character_store = character_store
 
         # Monotonic heartbeat counter for SawRingBuffer entries
         self._heartbeat: int = 0
@@ -151,13 +158,22 @@ class Ingestor:
     # ── Public API ────────────────────────────────────────────────────────
 
     def ingest_dialogue(self, turn: DialogueTurn, category: str | None = None,
-                         extra_metadata: dict | None = None) -> IngestReceipt:
+                         extra_metadata: dict | None = None,
+                         character_role: str | None = None) -> IngestReceipt:
         """Ingest a dialogue turn — all content goes to both stores.
 
         1. Store in SawRingBuffer (always)
         2. Store in DialogueStore (always)
         3. Embed → semantic dedup → merge (weight+0.05) or insert (weight=0.5)
         4. Store in LearnedStore (always)
+        5. Character double-write (Unit 4): when *character_role* is given,
+           reference the stored entry from that character role.
+
+        The character reference is added after the learned write (insert or
+        merge) so the final ``entry_id`` — including the dedup merge target —
+        lands in the role's reference set.  Without *character_role* (or
+        without a ``character_store``) this hook is inert and behaviour is
+        unchanged (R11).
 
         Returns an ``IngestReceipt`` describing what happened (see ADR-0001):
         the stored entry id, whether it was deduped, the resulting weight,
@@ -235,6 +251,17 @@ class Ingestor:
             self._learned_store.insert(entry)
             deduped = False
             weight = 0.5
+
+        # 5. Character double-write (Unit 4): reference the stored entry from
+        # the bound role. Degrades to a log line — ingest must never be blocked.
+        if character_role and self._character_store is not None:
+            try:
+                self._character_store.add_memory(character_role, entry_id)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Character double-write failed for role=%s entry=%s: %s",
+                    character_role, entry_id, exc)
 
         return IngestReceipt(
             entry_id=entry_id,

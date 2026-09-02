@@ -263,6 +263,120 @@ def handle_conclusions(skill, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+# ── Mission structured records ────────────────────────────────────────
+
+def _get_mission_store(skill):
+    store = getattr(skill, "mission_store", None)
+    if store is None:
+        from memory_skill.mission import MissionStore
+        store = MissionStore(
+            learned_store=skill.learned_store,
+            learning_queue=getattr(skill, "learning_queue", None),
+        )
+        try:
+            object.__setattr__(skill, "mission_store", store)
+        except Exception:
+            pass
+    return store
+
+
+def handle_mission_create(skill, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        mission = _get_mission_store(skill).create(
+            content=args.get("content", ""),
+            title=args.get("title", ""),
+        )
+        return {"status": "created", "mission": mission.to_dict()}
+    except Exception as exc:
+        logger.exception("mission_create failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_get(skill, args: dict[str, Any]) -> dict[str, Any]:
+    mission_id = args.get("mission_id", "")
+    if not mission_id.strip():
+        return {"error": "mission_id is required"}
+    try:
+        mission = _get_mission_store(skill).get(mission_id)
+        if mission is None:
+            return {"error": f"mission {mission_id!r} not found"}
+        return {"mission": mission.to_dict()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_list(skill, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        missions = _get_mission_store(skill).list_missions(
+            status=args.get("status"),
+            limit=args.get("limit", 100),
+        )
+        return {"count": len(missions),
+                "missions": [m.to_dict() for m in missions]}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_add_step(skill, args: dict[str, Any]) -> dict[str, Any]:
+    mission_id = args.get("mission_id", "")
+    if not mission_id.strip():
+        return {"error": "mission_id is required"}
+    try:
+        mission = _get_mission_store(skill).add_step(
+            mission_id=mission_id,
+            text=args.get("text", ""),
+            skill_id=args.get("skill_id", ""),
+        )
+        return {"mission": mission.to_dict()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_update_step(skill, args: dict[str, Any]) -> dict[str, Any]:
+    mission_id = args.get("mission_id", "")
+    if not mission_id.strip():
+        return {"error": "mission_id is required"}
+    try:
+        mission = _get_mission_store(skill).update_step(
+            mission_id=mission_id,
+            index=args.get("index", -1),
+            text=args.get("text"),
+            skill_id=args.get("skill_id"),
+            done=args.get("done"),
+        )
+        return {"mission": mission.to_dict()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_remove_step(skill, args: dict[str, Any]) -> dict[str, Any]:
+    mission_id = args.get("mission_id", "")
+    if not mission_id.strip():
+        return {"error": "mission_id is required"}
+    try:
+        mission = _get_mission_store(skill).remove_step(
+            mission_id=mission_id,
+            index=args.get("index", -1),
+        )
+        return {"mission": mission.to_dict()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_mission_set_status(skill, args: dict[str, Any]) -> dict[str, Any]:
+    mission_id = args.get("mission_id", "")
+    if not mission_id.strip():
+        return {"error": "mission_id is required"}
+    try:
+        mission = _get_mission_store(skill).set_status(
+            mission_id=mission_id,
+            status=args.get("status", "open"),
+        )
+        return {"mission": mission.to_dict()}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def handle_learning_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
     """Mark a learning-queue item done/skipped (e.g. a completed mission).
 
@@ -393,6 +507,162 @@ def handle_pending_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
             **extra}
 
 
+# ── Character (role) management ───────────────────────────────────────
+
+def _get_character_store(skill):
+    """Return the skill's CharacterStore, or None when not composed."""
+    return getattr(skill, "character", None)
+
+
+def handle_character_list(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """List every role (character) with its memory ref_count."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    try:
+        return {"roles": character.list_roles()}
+    except Exception as exc:
+        logger.exception("character_list failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_create(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Create a role — a reference set over global memories, not a copy."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    try:
+        role_id = character.create_role(
+            name,
+            description=str(args.get("description") or ""),
+        )
+        return {"status": "created", "role_id": role_id}
+    except Exception as exc:
+        logger.exception("character_create failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_get(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Return a role's details plus its referenced memory ids."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    role_id = str(args.get("role_id") or "").strip()
+    if not role_id:
+        return {"error": "role_id is required"}
+    try:
+        role = character.get_role(role_id)
+        if role is None:
+            return {"error": f"role not found: {role_id}"}
+        return {
+            "role": role,
+            "memory_ids": character.list_memories(role_id),
+        }
+    except Exception as exc:
+        logger.exception("character_get failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_delete(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Delete a role; cascades its memory references and agent bindings."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    role_id = str(args.get("role_id") or "").strip()
+    if not role_id:
+        return {"error": "role_id is required"}
+    try:
+        if not character.delete_role(role_id):
+            return {"error": f"role not found: {role_id}"}
+        return {"status": "deleted", "role_id": role_id}
+    except Exception as exc:
+        logger.exception("character_delete failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_add_memory(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Add a global memory reference to a role (idempotent)."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    role_id = str(args.get("role_id") or "").strip()
+    memory_id = str(args.get("memory_id") or "").strip()
+    if not role_id:
+        return {"error": "role_id is required"}
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    try:
+        if not character.add_memory(role_id, memory_id):
+            return {"error": f"role not found: {role_id}"}
+        return {"status": "added"}
+    except Exception as exc:
+        logger.exception("character_add_memory failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_remove_memory(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Remove a memory reference from a role (idempotent)."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    role_id = str(args.get("role_id") or "").strip()
+    memory_id = str(args.get("memory_id") or "").strip()
+    if not role_id:
+        return {"error": "role_id is required"}
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    try:
+        if not character.remove_memory(role_id, memory_id):
+            return {"error": f"role not found: {role_id}"}
+        return {"status": "removed"}
+    except Exception as exc:
+        logger.exception("character_remove_memory failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_bind_agent(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Bind an agent to a role; an empty role_id unbinds instead.
+
+    Rebinding an already-bound agent switches it to the new role.
+    A bound agent's weave only injects memories inside the role's
+    reference set.
+    """
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    agent_name = str(args.get("agent_name") or "")
+    role_id = str(args.get("role_id") or "").strip()
+    try:
+        if not role_id:
+            character.unbind_agent(agent_name)
+            return {"status": "unbound", "agent_name": agent_name,
+                    "role_id": None}
+        if not character.bind_agent(agent_name, role_id):
+            return {"error": f"role not found: {role_id}"}
+        return {"status": "bound", "agent_name": agent_name,
+                "role_id": role_id}
+    except Exception as exc:
+        logger.exception("character_bind_agent failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_character_agent_role(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Return the role id an agent is bound to (None when unbound)."""
+    character = _get_character_store(skill)
+    if character is None:
+        return {"error": "character store not available"}
+    agent_name = str(args.get("agent_name") or "")
+    try:
+        return {"agent_name": agent_name,
+                "role_id": character.get_agent_role(agent_name)}
+    except Exception as exc:
+        logger.exception("character_agent_role failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 # ── Dispatch map ───────────────────────────────────────────────────────
 
 DISPATCH = {
@@ -411,6 +681,21 @@ DISPATCH = {
     "memory_pending": handle_pending,
     "memory_pending_mark": handle_pending_mark,
     "memory_conclusions": handle_conclusions,
+    "memory_mission_create": handle_mission_create,
+    "memory_mission_get": handle_mission_get,
+    "memory_mission_list": handle_mission_list,
+    "memory_mission_add_step": handle_mission_add_step,
+    "memory_mission_update_step": handle_mission_update_step,
+    "memory_mission_remove_step": handle_mission_remove_step,
+    "memory_mission_set_status": handle_mission_set_status,
+    "memory_character_list": handle_character_list,
+    "memory_character_create": handle_character_create,
+    "memory_character_get": handle_character_get,
+    "memory_character_delete": handle_character_delete,
+    "memory_character_add_memory": handle_character_add_memory,
+    "memory_character_remove_memory": handle_character_remove_memory,
+    "memory_character_bind_agent": handle_character_bind_agent,
+    "memory_character_agent_role": handle_character_agent_role,
 }
 
 # ── Tool schemas (single source of truth) ────────────────────────
@@ -473,8 +758,83 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "description": "Rewrite a skill entry's content \u2014 a correction from the user or the agent after learning. Directly replaces the stored content (not a semantic merge), so skills stay writable for teaching.",
         "inputSchema": {"type": "object", "properties": {"entry_id": {"type": "string", "description": "The skill entry id to update."}, "content": {"type": "string", "description": "The corrected skill content (markdown ok)."}}, "required": ["entry_id", "content"]},
     },
+    "memory_mission_create": {
+        "description": "Create a structured mission record (category=mission ChromaDB entry + open learning-queue item). The mission holds a steps list and an open/done status in its metadata; add steps with memory_mission_add_step.",
+        "inputSchema": {"type": "object", "properties": {"content": {"type": "string", "description": "The mission description / task content."}, "title": {"type": "string", "description": "Optional short title."}}, "required": ["content"]},
+    },
+    "memory_mission_get": {
+        "description": "Return a full mission record: content, status (open/done), steps list with per-step skill linkage and done flags.",
+        "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string", "description": "The mission entry id (dialogue:mission_...)."}}, "required": ["mission_id"]},
+    },
+    "memory_mission_list": {
+        "description": "List structured missions, optionally filtered by status (open/done), newest first.",
+        "inputSchema": {"type": "object", "properties": {"status": {"type": "string", "description": "Optional filter: 'open' or 'done'.", "enum": ["open", "done"]}, "limit": {"type": "integer", "default": 100, "description": "Max missions to return (default 100)."}}},
+    },
+    "memory_mission_add_step": {
+        "description": "Append a step to a mission. Optionally link a skill by its entry id; the skill title is resolved and stored on the step.",
+        "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string", "description": "The mission entry id."}, "text": {"type": "string", "description": "Step description."}, "skill_id": {"type": "string", "description": "Optional linked skill entry id."}}, "required": ["mission_id", "text"]},
+    },
+    "memory_mission_update_step": {
+        "description": "Modify one step by index: text, skill_id, or done flag. Unspecified fields are left unchanged.",
+        "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string", "description": "The mission entry id."}, "index": {"type": "integer", "description": "Zero-based step index."}, "text": {"type": "string", "description": "New step text."}, "skill_id": {"type": "string", "description": "New linked skill id."}, "done": {"type": "boolean", "description": "Step completion flag."}}, "required": ["mission_id", "index"]},
+    },
+    "memory_mission_remove_step": {
+        "description": "Delete a step by index from a mission.",
+        "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string", "description": "The mission entry id."}, "index": {"type": "integer", "description": "Zero-based step index to remove."}}, "required": ["mission_id", "index"]},
+    },
+    "memory_mission_set_status": {
+        "description": "Set a mission's status to 'open' or 'done'. Mirroring closes the corresponding learning-queue item when marking done.",
+        "inputSchema": {"type": "object", "properties": {"mission_id": {"type": "string", "description": "The mission entry id."}, "status": {"type": "string", "enum": ["open", "done"]}}, "required": ["mission_id", "status"]},
+    },
+    "memory_character_list": {
+        "description": "列出所有角色（全局记忆的引用集合，不复制记忆内容）及其引用计数。绑定角色后 weave 只注入该角色的记忆。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "memory_character_create": {
+        "description": "创建新角色。角色=全局记忆的引用集合（不复制内容），绑定 agent 后 weave 只注入角色记忆。name 必填，description 可选，返回 role_id。",
+        "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "角色名，必填。"}, "description": {"type": "string", "description": "角色描述，可选。"}}, "required": ["name"]},
+    },
+    "memory_character_get": {
+        "description": "获取角色详情及其引用的全部 memory_id。角色不存在时返回 error。",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}}, "required": ["role_id"]},
+    },
+    "memory_character_delete": {
+        "description": "删除角色，级联删除其记忆引用和 agent 绑定。角色不存在时返回 error。",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}}, "required": ["role_id"]},
+    },
+    "memory_character_add_memory": {
+        "description": "向角色添加一条全局记忆引用（幂等，不复制内容）。角色绑定后 weave 只注入其引用集合内的记忆。",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}, "memory_id": {"type": "string", "description": "全局记忆 entry id（如 dialogue:xxx）。"}}, "required": ["role_id", "memory_id"]},
+    },
+    "memory_character_remove_memory": {
+        "description": "从角色移除一条记忆引用（幂等）。角色不存在时返回 error。",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}, "memory_id": {"type": "string", "description": "记忆 entry id。"}}, "required": ["role_id", "memory_id"]},
+    },
+    "memory_character_bind_agent": {
+        "description": "将 agent 绑定到角色（重复绑定会切换到新角色）。role_id 为空字符串或省略时解绑。绑定后该 agent 的 weave 只注入角色记忆。",
+        "inputSchema": {"type": "object", "properties": {"agent_name": {"type": "string", "description": "Agent 名。"}, "role_id": {"type": "string", "description": "角色 id；留空或省略 = 解绑。"}}, "required": ["agent_name"]},
+    },
+    "memory_character_agent_role": {
+        "description": "查询 agent 当前绑定的角色 id（未绑定返回 null）。",
+        "inputSchema": {"type": "object", "properties": {"agent_name": {"type": "string", "description": "Agent 名。"}}, "required": ["agent_name"]},
+    },
     "memory_weave": {
         "description": "Auto-assemble layered memory context for the current conversation. Call BEFORE responding to any user message. Returns a context block ready for system-prompt injection. tier1: scene perception, tier2: deep memory (gated), nudge: high-importance reminders.\n\nV10: Both user_message AND assistant_content are auto-ingested (ImportanceScorer filters trivial content). This mirrors the Room framework's conversation-block pattern where both sides of every exchange are persisted without manual ingest calls.",
         "inputSchema": {"type": "object", "properties": {"user_message": {"type": "string", "description": "The user's current message."}, "assistant_content": {"type": "string", "description": "Optional: your OWN response from the PREVIOUS exchange. Auto-ingested into memory so both sides of every conversation block are persisted. Pass your full last response."}, "scene_summary": {"type": "string", "description": "Optional: what the user is doing now."}}},
     },
 }
+
+
+# ── Consistency guard ─────────────────────────────────────────────
+# DISPATCH (handlers) and TOOL_SCHEMAS (MCP schemas) must stay in sync:
+# adding a tool means touching BOTH. This invariant is cheap to check
+# at import time and fails fast instead of shipping an Unknown tool.
+_MISSING_SCHEMA = sorted(set(DISPATCH) - set(TOOL_SCHEMAS))
+_MISSING_HANDLER = sorted(set(TOOL_SCHEMAS) - set(DISPATCH))
+if _MISSING_SCHEMA or _MISSING_HANDLER:
+    raise RuntimeError(
+        "DISPATCH/TOOL_SCHEMAS out of sync: "
+        f"no schema for {_MISSING_SCHEMA}; "
+        f"no handler for {_MISSING_HANDLER}"
+    )
+del _MISSING_SCHEMA, _MISSING_HANDLER
