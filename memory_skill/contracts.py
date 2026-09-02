@@ -214,6 +214,16 @@ class MemorySkillConfig:
         ),
     )
 
+    # ── Query embedding (bge asymmetric retrieval) ────────────────────────
+    # bge models expect the query-instruction prefix on the *query* side only
+    # (documents are embedded raw).  This matches the official FlagEmbedding
+    # usage and needs no re-embedding of stored vectors.
+    #   None → default instruction: "Represent this sentence for searching
+    #          relevant passages: "
+    #   ""   → disabled (legacy behavior, no prefix)
+    #   str  → custom instruction prefix
+    query_instruction: str | None = None
+
     # ── Retrieval ─────────────────────────────────────────────────────────
     similarity_top_k: int = 10
     rrf_k: int = 60
@@ -240,6 +250,14 @@ class MemorySkillConfig:
     # User memories branch from 偏好/回忆与目标.
     # Assistant memories branch from 人格/任务与技能.
     # LLM classification runs only on dedup miss (no gate).
+
+    # ── Todo hard gates (archive + queue, Unit 2 plan) ────────────────────
+    archive_interval: int = 10
+    # Every N weaves, when default-category entries remain unarchived, the
+    # archive gate arms and the next weave() raises ArchiveRequired.
+    queue_threshold: int = 20
+    # When open learning-queue items exceed this count, the queue gate arms
+    # and the next weave() raises QueueRequired.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

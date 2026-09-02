@@ -56,6 +56,12 @@ def ingest_mission_ex(ms, title: str, content: str) -> object:
     return _ingest_structured(ms, title, content, "mission")
 
 
+def ingest_conclusion_ex(ms, title: str, content: str) -> object:
+    """Persist a root-cause / knowledge conclusion under the conclusion category."""
+    body = f"{title}\n{content}" if content else title
+    return _ingest_structured(ms, title, body, "conclusion")
+
+
 def ingest_pref(ms, key: str, value: str) -> object:
     return _ingest_structured(ms, key, f"{key}: {value}", "pref")
 
@@ -65,11 +71,17 @@ def ingest_pers(ms, trait: str) -> object:
     cards = [e for e in existing.entries if e.content.startswith("# ")]
     if cards:
         current = max(cards, key=lambda e: len(e.content)).content
-        if f"- {trait}" not in current:
-            dup = ms.learned_store.find_duplicate(ms.embedder.embed(current), threshold=0.85)
-            if dup:
-                return None
-            updated = current.rstrip() + f"\n- {trait}\n"
-            ms.learned_store.update(cards[0].id, updated)
+        if f"- {trait}" in current:
+            # Trait already on the card — nothing to do; do NOT create a
+            # stray "- trait" entry via fall-through.
             return cards[0]
+        dup = ms.learned_store.find_duplicate(ms.embedder.embed(current), threshold=0.85)
+        # find_duplicate embeds the whole card, whose nearest neighbour is
+        # the card itself (cosine distance ~0). Skip dedup when the match
+        # is the card we are appending to — otherwise append never runs.
+        if dup and dup.get("entry_id") != cards[0].id:
+            return None
+        updated = current.rstrip() + f"\n- {trait}\n"
+        ms.learned_store.update(cards[0].id, updated)
+        return cards[0]
     return _ingest_structured(ms, trait, f"- {trait}", "pers")

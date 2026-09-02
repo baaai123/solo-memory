@@ -127,6 +127,58 @@ def handle_ingest(skill, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def handle_ingest_pers(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Write a persona rule/trait into the pers category.
+
+    Delegates to ``skill.ingest_pers`` (memory_extract): appends the trait
+    to the longest existing ``# ``-prefixed persona card, or creates a new
+    pers entry when no card exists.  The weaver's [人格特征] block reads
+    the pers category, so traits written here surface in every weave.
+    A ``None`` result means the store deduped the write (duplicate).
+    """
+    raw = args.get("trait")
+    if not isinstance(raw, str) or not raw.strip():
+        return {"error": "trait is required"}
+    trait = raw.strip()
+    ingest_pers = getattr(skill, "ingest_pers", None)
+    if ingest_pers is None:
+        return {"error": "ingest_pers not available on this skill"}
+    try:
+        result = ingest_pers(trait)
+    except Exception as exc:
+        logger.exception("ingest_pers failed for %r", trait)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    if result is None:
+        return {"status": "duplicate_skipped", "trait": trait}
+    return {"status": "ingested", "trait": trait, "persisted": True}
+
+
+def handle_ingest_conclusion(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Persist a root-cause / knowledge conclusion into the conclusion category.
+
+    Delegates to ``skill.ingest_conclusion`` (memory_extract).  The weaver's
+    [历史结论] block reads the conclusion category (newest first), so
+    conclusions written here surface in every weave.  Call this whenever a
+    debugging session or investigation reaches a root-cause verdict.
+    """
+    raw_title = args.get("title")
+    if not isinstance(raw_title, str) or not raw_title.strip():
+        return {"error": "title is required"}
+    title = raw_title.strip()
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        content = str(content)
+    ingest_conclusion = getattr(skill, "ingest_conclusion", None)
+    if ingest_conclusion is None:
+        return {"error": "ingest_conclusion not available on this skill"}
+    try:
+        result = ingest_conclusion(title, content.strip())
+    except Exception as exc:
+        logger.exception("ingest_conclusion failed for %r", title)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    return {"status": "ingested", "title": title, "persisted": True}
+
+
 def handle_status(skill, args: dict[str, Any]) -> dict[str, Any]:
     h = skill.health()
     if h.get("embedder", {}).get("degraded"):
@@ -396,6 +448,7 @@ def handle_learning_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "learning_queue not available (tree disabled?)"}
     try:
         ok = queue.mark(item_id.strip(), status)
+        _clear_queue_pending(skill)
         return {"status": "marked" if ok else "not_found_or_already_closed",
                 "item_id": item_id.strip(), "new_status": status}
     except Exception as exc:
@@ -505,6 +558,116 @@ def handle_pending_mark(skill, args: dict[str, Any]) -> dict[str, Any]:
     return {"status": "marked",
             "candidate_id": candidate_id.strip(),
             **extra}
+
+
+# ── Archive: review + reclassify default-category entries ─────────────
+
+# Legal learned-store categories (verified against the live chroma store
+# 2026-09-02: default 993 / skill 53 / mission 64 / pref 7 / pers 3 /
+# conclusion 25).  Kept in tools.py — contracts.py is server-layer
+# territory (Unit 2 hard gate) and must not be touched here.
+VALID_CATEGORIES = frozenset(
+    {"pref", "pers", "skill", "mission", "conclusion", "default"}
+)
+
+
+def _clear_archive_pending(skill) -> None:
+    """Disarm the archive hard-gate after any archive-tool response.
+
+    Unit 2 anti-deadlock rule (R8): a successful review_default /
+    reclassify call proves the agent responded, so the gate clears even
+    when zero entries moved.  Defensive: shells without a protocol
+    reference (e.g. minimal test compositions) skip silently.
+    """
+    protocol = getattr(skill, "protocol", None)
+    if protocol is not None and hasattr(protocol, "clear_archive_pending"):
+        protocol.clear_archive_pending()
+
+
+def _clear_queue_pending(skill) -> None:
+    """Disarm the queue hard-gate after any learning_mark response."""
+    protocol = getattr(skill, "protocol", None)
+    if protocol is not None and hasattr(protocol, "clear_queue_pending"):
+        protocol.clear_queue_pending()
+
+
+def handle_review_default(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """List default-category entries awaiting reclassification.
+
+    The classifier (08-11 architecture) leaves every turn the agent never
+    explicitly categorized as ``default``; this tool is how the agent
+    reviews that backlog and reclassifies it via ``memory_reclassify``.
+    """
+    try:
+        limit = int(args.get("limit", 10))
+        offset = int(args.get("offset", 0))
+    except (TypeError, ValueError):
+        return {"error": "limit/offset must be integers"}
+    limit = max(0, min(limit, 50))
+    offset = max(0, offset)
+    try:
+        all_entries = skill.learned_store.list_by_category(
+            "default", limit=0, sort_by="updated_at", descending=True,
+        )
+        total = len(all_entries)
+        page = all_entries[offset:] if limit == 0 else all_entries[offset:offset + limit]
+        _clear_archive_pending(skill)
+        return {
+            "count": len(page),
+            "total": total,
+            "items": [
+                {
+                    "id": e.id,
+                    "content": e.content[:200],
+                    "title": e.metadata.get("title", ""),
+                    "category": e.category,
+                    "updated_at": e.updated_at.isoformat() if e.updated_at else None,
+                }
+                for e in page
+            ],
+        }
+    except Exception as exc:
+        logger.exception("review_default failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def handle_reclassify(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Move an entry out of ``default`` into a real category.
+
+    Lightweight: only the ``category`` metadata field changes — content is
+    not re-embedded.  When the entry has no title, one is derived from the
+    first 30 chars of the content.
+    """
+    entry_id = str(args.get("entry_id") or "").strip()
+    category = str(args.get("category") or "").strip()
+    if not entry_id:
+        return {"error": "entry_id is required"}
+    if not category:
+        return {"error": "category is required"}
+    if category not in VALID_CATEGORIES:
+        return {"error": f"invalid category: {category}"}
+    try:
+        entry = skill.learned_store.get_entry(entry_id)
+        if entry is None:
+            return {"error": f"entry not found: {entry_id}"}
+        old_category = entry.category
+        old_title = str(entry.metadata.get("title") or "").strip()
+        skill.learned_store.set_category(entry_id, category)
+        title = old_title
+        if not title:
+            title = entry.content[:30]
+            skill.learned_store.set_title(entry_id, title)
+        _clear_archive_pending(skill)
+        return {
+            "ok": True,
+            "entry_id": entry_id,
+            "category": category,
+            "old_category": old_category,
+            "title": title,
+        }
+    except Exception as exc:
+        logger.exception("reclassify failed for %s", entry_id)
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 # ── Character (role) management ───────────────────────────────────────
@@ -669,6 +832,8 @@ DISPATCH = {
     "memory_weave": handle_weave,
     "memory_search": handle_search,
     "memory_ingest": handle_ingest,
+    "memory_ingest_pers": handle_ingest_pers,
+    "memory_ingest_conclusion": handle_ingest_conclusion,
     "memory_status": handle_status,
     "memory_feedback": handle_feedback,
     "memory_check_skill": handle_check_skill,
@@ -681,6 +846,8 @@ DISPATCH = {
     "memory_pending": handle_pending,
     "memory_pending_mark": handle_pending_mark,
     "memory_conclusions": handle_conclusions,
+    "memory_review_default": handle_review_default,
+    "memory_reclassify": handle_reclassify,
     "memory_mission_create": handle_mission_create,
     "memory_mission_get": handle_mission_get,
     "memory_mission_list": handle_mission_list,
@@ -714,6 +881,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "description": "List reusable conclusion entries extracted from assistant replies (category=conclusion, title + summary + evidence format). Queries the store directly by category \u2014 NOT semantic search \u2014 so the result is complete and accurate. Use to verify what conclusions the memory system has distilled.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10, "description": "Max conclusions to return (newest first)."}}},
     },
+    "memory_review_default": {
+        "description": "列出 default 分类下待归位的记忆条目（agent 未主动分类而积压的候选）。返回 count/total/items（id、content 截断 200 字符、title、category、updated_at），按 updated_at 倒序。归档硬门触发时用此工具查看候选，再用 memory_reclassify 归位。",
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 10, "maximum": 50, "description": "返回条数（默认 10，最大 50）。"}, "offset": {"type": "integer", "default": 0, "description": "跳过条数，用于分页（默认 0）。"}}},
+    },
+    "memory_reclassify": {
+        "description": "将记忆条目归位到 pref/pers/skill/mission/conclusion（或改回 default）。只更新 category 元数据、不重嵌 content（轻量）；title 为空时自动用 content 前 30 字符补全。归档硬门触发时归档候选后调用。",
+        "inputSchema": {"type": "object", "properties": {"entry_id": {"type": "string", "description": "条目 id（memory_review_default 返回的 id）。"}, "category": {"type": "string", "enum": ["pref", "pers", "skill", "mission", "conclusion", "default"], "description": "目标分类。"}}, "required": ["entry_id", "category"]},
+    },
     "memory_distill": {
         "description": "Turn dialogue fragments into reviewable candidate cards (topic/summary/evidence/suggested). Pure decision-support \u2014 nothing is promoted; review via memory_pending. Walks history window by window: offset=0 is newest 60 turns, pass offset=60 to reach older memories.",
         "inputSchema": {"type": "object", "properties": {"since_days": {"type": "integer", "description": "Look back this many days (default 7)."}, "offset": {"type": "integer", "description": "Skip this many newest turns (default 0)."}, "limit": {"type": "integer", "description": "Window size per call (default 60)."}}},
@@ -725,6 +900,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "memory_ingest": {
         "description": "Save a dialogue turn into the memory system for future retrieval. Call this after significant interactions \u2014 user questions, important answers, decisions made, facts learned. Each turn is indexed for both semantic search and full-text retrieval.\n\n",
         "inputSchema": {"type": "object", "properties": {"content": {"type": "string", "description": "The content to save \u2014 typically the user's question or your response that should be remembered."}, "role": {"type": "string", "default": "user", "description": "Speaker role: 'user', 'assistant', or 'system'.", "enum": ["user", "assistant", "system"]}}, "required": ["content"]},
+    },
+    "memory_ingest_pers": {
+        "description": "将人格规则/特质写入人格记忆（pers 分类）。weave 的 [人格特征] 区会显示。用于持久化用户明确要求的规则（如\"禁止使用内置 todo\"）。规则会自动追加到人格卡片。",
+        "inputSchema": {"type": "object", "properties": {"trait": {"type": "string", "description": "人格规则/特质描述，必填。自动追加到 pers 分类中最长的 # 开头人格卡片；无卡片时新建。"}}, "required": ["trait"]},
+    },
+    "memory_ingest_conclusion": {
+        "description": "将排查/调查得出的根因结论写入结论记忆（conclusion 分类）。weave 的 [历史结论] 区会显示（最新优先）。每当调试/排查/架构审查得出根因判断时调用，title 简短总结结论，content 补充细节。",
+        "inputSchema": {"type": "object", "properties": {"title": {"type": "string", "description": "结论标题（简短，如：find_duplicate bug 由余弦距离反转导致），必填。"}, "content": {"type": "string", "description": "结论细节（可选）：根因、影响、修复方式。"}}, "required": ["title"]},
     },
     "memory_learning_mark": {
         "description": "Mark a learning-queue item as done or skipped (e.g. a completed mission). Missions are never auto-closed \u2014 the agent closes them explicitly after decomposition/execution. Pass the item id from memory_learning_queue.",

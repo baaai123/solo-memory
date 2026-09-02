@@ -75,6 +75,8 @@ class WeaverStores:
     degraded: bool = False
     degraded_reason: str | None = None
     character: object = None  # CharacterStore — role whitelist source (Unit 4)
+    protocol: object = None  # ProtocolState — todo-gate flags (Unit 2)
+    learning_queue: object = None  # LearningQueue — open-item count (Unit 2)
 
 
 @dataclass
@@ -100,6 +102,7 @@ class WeaveContext:
     pers_context: str = ""
     conclusion_context: str = ""
     gap_context: str = ""
+    todo_context: str = ""
     title_preview: str = ""
     historic_hint: str = ""
     pending_context: str = ""
@@ -119,6 +122,8 @@ class WeaveContext:
         )
         if self.gap_context:
             directives.append(self.gap_context)
+        if self.todo_context:
+            directives.append(self.todo_context)
 
         parts: list[str] = []
         if directives:
@@ -217,6 +222,7 @@ def weave(
     # no-history early return would silently drop them.
     ctx.gap_context = _build_gap_context(stores.gaps)
     ctx.pending_context = _build_pending_context(stores.pending_store)
+    ctx.todo_context = _build_todo_context(stores)
 
     if stores.degraded:
         ctx.embedder_banner = (
@@ -675,6 +681,50 @@ def _build_pending_context(pending_store) -> str:
         lines.append(f"  · {c.topic}（建议 {c.suggested}）"
                      f"——memory_pending 查看证据")
     return "\n".join(lines)
+
+
+def _build_todo_context(stores: WeaverStores) -> str:
+    """Render pending todo hard-gate state as a directive (Unit 2).
+
+    Non-empty only while archive_pending / queue_pending is armed, with
+    live store counts so the agent sees exactly what awaits it:
+    ``📥 待办：default 分类 N 条未归档 · 学习队列 M 条 open``.
+    """
+    protocol = getattr(stores, "protocol", None)
+    if protocol is None:
+        return ""
+    archive_pending = bool(getattr(protocol, "archive_pending", False))
+    queue_pending = bool(getattr(protocol, "queue_pending", False))
+    if not (archive_pending or queue_pending):
+        return ""
+
+    parts: list[str] = []
+    if archive_pending:
+        parts.append(f"default 分类 {_count_default_entries(stores)} 条未归档"
+                     "（memory_review_default 查看 → memory_reclassify 归位）")
+    if queue_pending:
+        parts.append(f"学习队列 {_count_open_queue(stores)} 条 open"
+                     "（memory_learning_queue 查看 → memory_learning_mark 响应）")
+    return "📥 待办：" + " · ".join(parts)
+
+
+def _count_default_entries(stores: WeaverStores) -> int:
+    try:
+        return len(stores.learned_store.list_by_category("default", limit=0))
+    except Exception as exc:
+        _logger.debug("todo default count failed: %s", exc)
+        return 0
+
+
+def _count_open_queue(stores: WeaverStores) -> int:
+    queue = getattr(stores, "learning_queue", None)
+    if queue is None:
+        return 0
+    try:
+        return int(queue.count_open())
+    except Exception as exc:
+        _logger.debug("todo queue count failed: %s", exc)
+        return 0
 
 
 def _build_pref_context(retriever: RetrievalSource,

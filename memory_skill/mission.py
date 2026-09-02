@@ -102,11 +102,11 @@ class MissionStore:
 
     ``learned_store`` must expose ``insert`` / ``update`` / ``get_entry`` /
     ``list_by_category``; ``learning_queue`` must expose ``enqueue`` /
-    ``mark`` / ``all`` (may be None when tree is disabled — mission still
-    works, just without queue mirroring).
+    ``open_items`` / ``mark`` (may be None when tree is disabled — mission
+    still works, just without queue mirroring).
     """
 
-    def __init__(self, learned_store, learning_queue) -> None:
+    def __init__(self, learned_store, learning_queue=None) -> None:
         self._learned = learned_store
         self._queue = learning_queue
 
@@ -300,14 +300,19 @@ class MissionStore:
         self._learned.update(entry.id, entry.content, metadata=new_meta)
 
     def _mirror_queue_status(self, mission_id: str, status: str) -> None:
-        """Close/open the mirrored learning-queue item."""
-        if self._queue is None:
+        """Mark the mirrored open queue item done when the mission is done.
+
+        Matches ``open_items(kind="mission")`` whose ``detail`` contains
+        ``mission_id={mission_id}``. Missing or already-closed items and
+        mark failures only log a warning — never blocking the status update.
+        """
+        if self._queue is None or status != "done":
             return
+        needle = f"mission_id={mission_id}"
         try:
-            for item in self._queue.all(limit=500):
-                if f"mission_id={mission_id}" in getattr(item, "detail", ""):
-                    if status == "done":
-                        self._queue.mark(item.id, "done")
+            for item in self._queue.open_items(kind="mission"):
+                if needle in getattr(item, "detail", ""):
+                    self._queue.mark(item.id, "done")
                     break
         except Exception as exc:
             logger.warning("Queue status mirror failed for %s: %s",

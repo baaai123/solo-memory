@@ -12,6 +12,10 @@ Gate rules (checked in order):
   1. ClassificationRequired — the previous turn was not classified.
   2. SkillCheckRequired — a classified mission has not checked existing skills.
   3. GapRequired — a mission has unfulfilled skill gaps.
+  4. ArchiveRequired — default-category backlog awaiting reclassification
+     (armed every archive_interval weaves, Unit 2).
+  5. QueueRequired — learning queue open items above queue_threshold
+     (Unit 2).
 """
 
 from __future__ import annotations
@@ -24,10 +28,13 @@ class ProtocolGate:
         self._state = system.protocol
 
     def check(self, user_message: str) -> None:
-        """Raise ClassificationRequired, SkillCheckRequired, or GapRequired."""
+        """Raise ClassificationRequired, SkillCheckRequired, GapRequired,
+        ArchiveRequired, or QueueRequired."""
         from memory_skill._compose import (
+            ArchiveRequired,
             ClassificationRequired,
             GapRequired,
+            QueueRequired,
             SkillCheckRequired,
         )
 
@@ -50,6 +57,20 @@ class ProtocolGate:
                 f"以下技能尚未补齐: {', '.join(sorted(self._state.pending_gaps)[:8])}. "
                 "必须先 websearch → memory_teach_skill 补齐所有技能，"
                 "再继续对话。"
+            )
+
+        if self._state.archive_pending:
+            raise ArchiveRequired(
+                "default 分类积压未归档。请先调用 memory_review_default 查看候选，"
+                "再用 memory_reclassify 归位到 pref/pers/skill/mission/conclusion"
+                "（任一归档工具调用即清除本硬门，无需一次清空）。"
+            )
+
+        if self._state.queue_pending:
+            raise QueueRequired(
+                "学习队列待办积压。请先调用 memory_learning_queue 查看，"
+                "再用 memory_learning_mark(done/skipped) 响应"
+                "（调用即清除本硬门，无需一次清空）。"
             )
 
     def after_weave(self, user_message: str) -> None:

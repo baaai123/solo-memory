@@ -17,6 +17,7 @@ from memory_skill.contracts import (
     EmbedderProtocol,
     LearnedStoreProtocol,
     MemorySkillConfig,
+    MemorySkillError,
     SawBufferProtocol,
     TreeManagerProtocol,
 )
@@ -35,6 +36,24 @@ class GapRequired(Exception):
 
 class SkillCheckRequired(Exception):
     """Raised by weave() when a classified mission has not yet checked existing skills."""
+
+
+class ArchiveRequired(MemorySkillError):
+    """Raised by weave() when the default-category backlog awaits archiving.
+
+    Armed every ``archive_interval`` weaves while default entries remain
+    (Unit 2).  Any archive-tool call (review_default / reclassify) clears
+    the gate — responding is required, emptying is not.
+    """
+
+
+class QueueRequired(MemorySkillError):
+    """Raised by weave() when learning-queue open items exceed the threshold.
+
+    Armed when ``count_open() > queue_threshold`` (Unit 2).  Any
+    learning_mark call clears the gate — responding is required, emptying
+    is not.
+    """
 
 
 @dataclass(eq=False)
@@ -149,11 +168,77 @@ class MemorySystem:
             degraded=self.embedder.degraded,
             degraded_reason=self.embedder.reason,
             character=getattr(self, 'character', None),
+            protocol=self.protocol,
+            learning_queue=getattr(self, 'learning_queue', None),
         )
         ctx = weave(stores, user_message, scene_summary, partner=partner,
                     character_role=self._resolve_character_role())
         ProtocolGate(self).after_weave(user_message)
+        self._maybe_arm_todo_gates()
         return ctx
+
+    def _maybe_arm_todo_gates(self) -> None:
+        """Arm the archive/queue hard gates after a successful weave.
+
+        Unit 2 scheme A: MemorySystem owns the trigger logic because it
+        alone can read store counts; ProtocolGate only checks the flags.
+        The archive gate arms when ``weave_count % archive_interval == 0``
+        and default entries remain — the modulo check gives an interval
+        of grace after each agent response.  The queue gate arms when
+        open items exceed ``queue_threshold``.  Idempotent: an already
+        pending gate is never re-armed.  Never raises: store hiccups
+        degrade to "no arming" so weaving is never blocked by this path.
+        """
+        protocol = getattr(self, "protocol", None)
+        if protocol is None:
+            return
+        if not getattr(protocol, "archive_pending", False):
+            interval = self._todo_interval()
+            count = getattr(protocol, "weave_count", 0)
+            if interval > 0 and count >= interval and count % interval == 0 \
+                    and self._default_entry_count() > 0:
+                protocol.arm_archive()
+        if not getattr(protocol, "queue_pending", False):
+            if self._open_queue_count() > self._todo_queue_threshold():
+                protocol.arm_queue()
+
+    def _todo_interval(self) -> int:
+        """Configured archive_interval, degraded to a safe default."""
+        config = getattr(self, "config", None)
+        try:
+            return max(1, int(getattr(config, "archive_interval", 10) or 10))
+        except (TypeError, ValueError):
+            return 10
+
+    def _todo_queue_threshold(self) -> int:
+        """Configured queue_threshold, degraded to a safe default."""
+        config = getattr(self, "config", None)
+        try:
+            return int(getattr(config, "queue_threshold", 20) or 20)
+        except (TypeError, ValueError):
+            return 20
+
+    def _default_entry_count(self) -> int:
+        """Count default-category entries (0 on missing store / failure)."""
+        store = getattr(self, "learned_store", None)
+        if store is None:
+            return 0
+        try:
+            return len(store.list_by_category("default", limit=0))
+        except Exception as exc:
+            _logger.debug("default-category count failed: %s", exc)
+            return 0
+
+    def _open_queue_count(self) -> int:
+        """Count open learning-queue items (0 on missing store / failure)."""
+        queue = getattr(self, "learning_queue", None)
+        if queue is None:
+            return 0
+        try:
+            return int(queue.count_open())
+        except Exception as exc:
+            _logger.debug("learning-queue count failed: %s", exc)
+            return 0
 
     def _resolve_character_role(self) -> str | None:
         """Resolve the character id this system's agent is bound to.
@@ -315,6 +400,10 @@ class MemorySystem:
     def ingest_pref(self, key: str, value: str) -> object:
         from memory_skill.memory_extract import ingest_pref as _ipr
         return _ipr(self, key, value)
+
+    def ingest_conclusion(self, title: str, content: str = "") -> object:
+        from memory_skill.memory_extract import ingest_conclusion_ex as _ic
+        return _ic(self, title, content)
 
     def count_turns(self) -> int:
         return self.dialogue_store.count()
