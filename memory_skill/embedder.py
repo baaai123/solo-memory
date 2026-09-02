@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 # Embedder
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Official bge asymmetric-retrieval instruction (FlagEmbedding).  Applied on
+# the query side only; stored documents stay unprefixed, so existing vectors
+# need no re-embedding.
+DEFAULT_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
+
 
 # ── Singleton cache: same model_path → shared Embedder ──
 _embedder_cache: dict[str, Embedder] = {}
@@ -76,6 +81,10 @@ class Embedder:
         config: MemorySkillConfig,
         fallback_enabled: bool = True,
     ) -> None:
+        # Per-instance query instruction (cheap config state — the shared
+        # singleton cache only shares the expensive session/tokenizer).
+        self._query_instruction = config.query_instruction
+
         # Singleton: reuse existing embedder for same model path
         key = config.model_path
         if key in _embedder_cache:
@@ -147,6 +156,30 @@ class Embedder:
         if self._session is not None:
             return self._onnx_embed(text)
         return self._fallback_embed(text)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a *search query* with the bge query-instruction prefix.
+
+        bge models are trained for asymmetric retrieval: queries get the
+        instruction prefix, passages/documents do not.  The prefix is
+        controlled by ``MemorySkillConfig.query_instruction``:
+
+        - ``None`` → ``DEFAULT_QUERY_INSTRUCTION`` (official bge prefix)
+        - ``""``   → disabled (no prefix)
+        - ``str``  → custom prefix
+
+        Empty text yields an all-zero vector, matching ``embed()``.
+        """
+        if not text:
+            return self.embed(text)
+        prefix = (
+            self._query_instruction
+            if self._query_instruction is not None
+            else DEFAULT_QUERY_INSTRUCTION
+        )
+        if not prefix:
+            return self.embed(text)
+        return self.embed(f"{prefix}{text}")
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple texts at once.

@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from memory_skill.contracts import MemorySkillConfig
-from memory_skill.embedder import Embedder, clear_cache
+from memory_skill.embedder import DEFAULT_QUERY_INSTRUCTION, Embedder, clear_cache
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +31,42 @@ def _make_embedder(model_path: str, fallback_enabled: bool = True) -> Embedder:
         model_path=model_path,
     )
     return Embedder(cfg, fallback_enabled=fallback_enabled)
+
+
+class TestEmbedQuery:
+    """Query-side bge instruction prefix (asymmetric retrieval)."""
+
+    def test_embed_query_prepends_default_instruction(self) -> None:
+        emb = _make_embedder("/nonexistent/model.onnx")
+        assert emb.embed_query("hello") == emb.embed(
+            f"{DEFAULT_QUERY_INSTRUCTION}hello"
+        )
+
+    def test_embed_query_disabled_when_instruction_empty(self) -> None:
+        cfg = MemorySkillConfig(
+            db_path=":memory:",
+            model_path="/nonexistent/model.onnx",
+            query_instruction="",
+        )
+        emb = Embedder(cfg)
+        assert emb.embed_query("hello") == emb.embed("hello")
+
+    def test_embed_query_custom_instruction(self) -> None:
+        cfg = MemorySkillConfig(
+            db_path=":memory:",
+            model_path="/nonexistent/model.onnx",
+            query_instruction="custom: ",
+        )
+        emb = Embedder(cfg)
+        assert emb.embed_query("hello") == emb.embed("custom: hello")
+
+    def test_embed_query_empty_text_is_zero_vector(self) -> None:
+        emb = _make_embedder("/nonexistent/model.onnx")
+        assert emb.embed_query("") == [0.0] * emb._dim
+
+    def test_embed_query_differs_from_document_embed(self) -> None:
+        emb = _make_embedder("/nonexistent/model.onnx")
+        assert emb.embed_query("hello") != emb.embed("hello")
 
 
 class TestDegradedMode:

@@ -24,11 +24,17 @@ logger = logging.getLogger("memory_skill.capability")
 # cannot separate "knows" from "coincidental hit".  We pair the semantic
 # score with query↔content token overlap; see the KNOWN-ISSUES entry for the
 # full calibration table.
+#
+# Since 2026-09-02 semantic_score is an affine remap of the raw cosine
+# (learned_store.calibrate_semantic_score: f = (cos − 0.55) / 0.40, clipped).
+# The thresholds below are the same decision boundaries as the original
+# raw-cosine thresholds (0.85 / 0.72) expressed in the calibrated scale —
+# f(0.85) = 0.75, f(0.72) = 0.425 — so accept/reject behavior is unchanged.
 
 # Semantic score alone is sufficient above this (overwhelmingly strong match).
-_SEM_STRONG = 0.85
+_SEM_STRONG = 0.75
 # Semantic score + corroborating token overlap is sufficient above this.
-_SEM_CORROBORATED = 0.72
+_SEM_CORROBORATED = 0.425
 # Uncorroborated hits are damped: confidence reflects "weak evidence", so
 # gap detection treats them as gaps instead of answered.
 _UNCORROBORATED_DAMP = 0.5

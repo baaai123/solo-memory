@@ -42,6 +42,38 @@ class TestContracts:
         assert cfg.saw_buffer_capacity == 1000
 
 
+class TestSemanticCalibration:
+    """calibrate_semantic_score: anchors, clipping, monotonicity, thresholds."""
+
+    def test_floor_and_ceiling_anchors(self):
+        from memory_skill.learned_store import calibrate_semantic_score
+        assert calibrate_semantic_score(0.55) == 0.0
+        assert calibrate_semantic_score(0.95) == 1.0
+        assert calibrate_semantic_score(0.75) == 0.5
+
+    def test_clips_out_of_range(self):
+        from memory_skill.learned_store import calibrate_semantic_score
+        assert calibrate_semantic_score(-0.1) == 0.0
+        assert calibrate_semantic_score(0.3) == 0.0
+        assert calibrate_semantic_score(1.2) == 1.0
+
+    def test_monotonic(self):
+        from memory_skill.learned_store import calibrate_semantic_score
+        xs = [0.0, 0.3, 0.55, 0.62, 0.72, 0.85, 0.95, 1.0]
+        ys = [calibrate_semantic_score(x) for x in xs]
+        assert ys == sorted(ys)
+
+    def test_thresholds_match_original_raw_boundaries(self):
+        """0.75/0.425 are the calibrated images of raw 0.85/0.72 — keep in sync."""
+        from memory_skill.capability_registry import (
+            _SEM_CORROBORATED,
+            _SEM_STRONG,
+        )
+        from memory_skill.learned_store import calibrate_semantic_score
+        assert calibrate_semantic_score(0.72) == pytest.approx(_SEM_CORROBORATED)
+        assert calibrate_semantic_score(0.85) == pytest.approx(_SEM_STRONG)
+
+
 class TestSawBuffer:
     def test_put_and_get(self):
         from memory_skill.saw_buffer import SawRingBuffer

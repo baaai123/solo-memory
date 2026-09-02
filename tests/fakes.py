@@ -18,6 +18,7 @@ from memory_skill.contracts import (
     MemoryEnvelope,
     SawEntry,
 )
+from memory_skill.learned_store import calibrate_semantic_score
 from memory_skill.protocol_state import ProtocolState
 
 
@@ -233,7 +234,7 @@ class FakeLearnedStore:
                 sim = 0.5 if query in e.content else 0.0
             scored.append((sim, e))
         scored.sort(key=lambda x: x[0], reverse=True)
-        # Mirror real LearnedStore: attach the cosine as semantic_score.
+        # Mirror real LearnedStore: attach the calibrated semantic_score.
         return [
             MemoryEntry(
                 id=e.id,
@@ -245,7 +246,7 @@ class FakeLearnedStore:
                 tags=list(e.tags or []),
                 metadata=dict(e.metadata or {}),
                 is_system=e.is_system,
-                semantic_score=round(max(0.0, sim), 4),
+                semantic_score=round(calibrate_semantic_score(max(0.0, sim)), 4),
             )
             for sim, e in scored[:limit]
         ]

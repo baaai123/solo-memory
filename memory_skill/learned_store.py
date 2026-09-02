@@ -42,6 +42,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ── semantic_score calibration (bge raw cosine → relevance) ────────────────
+# Measured 2026-09-02 on the live store (bge-large-en-v1.5 ONNX, 1141 entries,
+# 318 sampled docs; short queries with the official instruction prefix):
+#   related   cos ∈ [0.74, 0.86]  (p50 ≈ 0.80)
+#   unrelated cos ∈ [0.57, 0.72]  (garbage ∈ [0.45, 0.76])
+# Raw cosine has a high noise floor and a ~1.0 strong-match ceiling; the
+# affine map below anchors the noise floor to 0 and the ceiling to 1, so the
+# reported score reads as relevance instead of raw cosine.  The map is
+# monotonic: rank order is preserved, and capability_registry thresholds are
+# remapped by the same function (f(0.72) → _SEM_CORROBORATED, f(0.85) →
+# _SEM_STRONG), so accept/reject behavior is unchanged — only the reported
+# confidence scale is.
+_SEM_RAW_FLOOR = 0.55
+_SEM_RAW_CEILING = 0.95
+
+
+def calibrate_semantic_score(raw_cosine: float) -> float:
+    """Map raw bge cosine similarity to calibrated relevance in [0, 1]."""
+    return min(
+        1.0,
+        max(0.0, (raw_cosine - _SEM_RAW_FLOOR) / (_SEM_RAW_CEILING - _SEM_RAW_FLOOR)),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LearnedStore
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -549,6 +573,24 @@ class LearnedStore:
         meta["title"] = title
         self._collection.update(ids=[entry_id], metadatas=[meta])
 
+    def set_category(self, entry_id: str, category: str) -> None:
+        """Update the category metadata for a memory entry.
+
+        Metadata-only write via ``collection.update`` — the content is NOT
+        re-embedded (unlike ``update()``), so reclassifying the ~1000
+        default-category entries is cheap.  Idempotent: does nothing if the
+        entry does not exist.
+        """
+        try:
+            existing = self._collection.get(ids=[entry_id], include=["metadatas"])
+        except Exception:
+            return
+        if not existing or not existing.get("ids"):
+            return
+        meta = dict(existing["metadatas"][0]) if existing["metadatas"][0] else {}
+        meta["category"] = category
+        self._collection.update(ids=[entry_id], metadatas=[meta])
+
     def boost_weight(self, entry_id: str, delta: float = 0.05, cap: float = 0.95) -> float:
         """Increase an entry's weight by *delta*, capped at *cap*.
 
@@ -594,7 +636,11 @@ class LearnedStore:
         filters: dict[str, Any] | None,
     ) -> list[MemoryEntry]:
         """Core search logic (no corruption handling — wrapped by search())."""
-        vector = self._embedder.embed(query) if query else [0.0] * self._config.embedding_dim
+        vector = (
+            self._embedder.embed_query(query)
+            if query
+            else [0.0] * self._config.embedding_dim
+        )
 
         kwargs: dict[str, Any] = dict(
             query_embeddings=[vector],
@@ -682,7 +728,8 @@ class LearnedStore:
             semantic_score: float | None = None
             if distances and distances[0]:
                 # ChromaDB cosine distance ∈ [0, 2]; similarity = 1 - distance.
-                semantic_score = round(max(0.0, 1.0 - float(distances[0][i])), 4)
+                raw_cosine = max(0.0, 1.0 - float(distances[0][i]))
+                semantic_score = round(calibrate_semantic_score(raw_cosine), 4)
 
             entries.append(
                 self._chroma_meta_to_entry(eid, doc, meta, semantic_score)
