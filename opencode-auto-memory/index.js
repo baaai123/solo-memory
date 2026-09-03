@@ -1,6 +1,7 @@
 import { execFile, execFileSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import os from "node:os";
 import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +32,14 @@ const MODEL_DIR = path.join(PROJECT, "models", "bge-large-en-v1.5");
 const MODEL_ONNX = path.join(MODEL_DIR, "model.onnx");
 const MODEL_ONNX_ALT = path.join(MODEL_DIR, "onnx", "model.onnx");
 const MODEL_SKIP_ENV = "MEMORY_SKIP_MODEL"; // "1" = explicitly skip (== setup.sh --no-model)
+
+// Cloud backup trigger: after each finished assistant turn we touch the
+// ccmp-backup daemon signal file (~/.ccmp-backup/signal, debounced there).
+// SOLO_MEMORY_BACKUP_SIGNAL overrides the path; "0" disables.
+const backupSignalPath =
+  process.env.SOLO_MEMORY_BACKUP_SIGNAL === "0"
+    ? ""
+    : process.env.SOLO_MEMORY_BACKUP_SIGNAL || path.join(os.homedir(), ".ccmp-backup", "signal");
 
 let setupInProgress = false;
 let setupDone = false;
@@ -238,6 +247,7 @@ export const opencodeAutoMemory = async ({ client }) => {
         const type = event?.type || "";
         const props = event?.properties || {};
         if (type === "message.updated" && props.info?.role === "assistant") {
+          signalBackup();
           const reply = props.info.parts
             ? props.info.parts.filter((p) => p.type === "text").map((p) => p.text || "").join("\n")
             : "";
@@ -261,6 +271,17 @@ export const opencodeAutoMemory = async ({ client }) => {
     },
   };
 };
+
+// ── Cloud backup signal (debounced upstream in ccmp-backup daemon) ──────
+// Touching the file after a finished turn arms the daemon's debounce window;
+// more activity resets it, so a backup fires only once the user goes idle.
+function signalBackup() {
+  if (!backupSignalPath) return;
+  try {
+    const d = new Date().toISOString();
+    fs.appendFileSync(backupSignalPath, `${d}\n`);
+  } catch { /* non-fatal */ }
+}
 
 // opencode plugin contract (verified against binary source, 2026-08-02):
 // - the loader reads `q.default` — a file/path plugin MUST default-export
