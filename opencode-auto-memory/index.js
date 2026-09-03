@@ -1,4 +1,4 @@
-import { execFile, execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -8,20 +8,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Debug trace — console.log is captured into opencode's log (proven by
 // Systematic's "initialized"); dbg() file is the fallback channel.
-const DEBUG_LOG = "/tmp/solo-memory-debug.log";
+const DEBUG_LOG = path.join(os.tmpdir(), "solo-memory-debug.log");
 const dbg = (msg) => {
   console.log(`[solo-memory] ${msg}`);
   try { fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`); } catch {}
 };
-// Project root: env override, else the solo-memory repo (this plugin ships
-// inside it; when copied to opencode's plugins dir, __dirname is wrong).
-const PROJECT = process.env.MEMORY_SKILL_PROJECT
-  || "/home/pc/projects/memory/memory for solo";
+// Project root: env override, else the solo-memory repo checkout this plugin
+// runs from (in-repo dev) or ships inside (this plugin ships inside it; when
+// copied to opencode's plugins dir you MUST set MEMORY_SKILL_PROJECT). A legacy
+// fallback keeps the original dev box working with no env (path exists only
+// there); elsewhere an unset env leaves the auto hooks inert with guidance.
+const PROJECT = inferProject();
+function inferProject() {
+  if (process.env.MEMORY_SKILL_PROJECT) return process.env.MEMORY_SKILL_PROJECT;
+  for (const cand of [path.resolve(__dirname, ".."), path.resolve(__dirname, "..", "..")]) {
+    if (fs.existsSync(path.join(cand, "requirements.txt"))) return cand;
+  }
+  const legacy = "/home/pc/projects/memory/memory for solo";
+  return fs.existsSync(legacy) ? legacy : "";
+}
 const DB = process.env.MEMORY_SKILL_DB_PATH
-  || path.join(PROJECT, "opencode_memory.db");
-const VENV = path.join(PROJECT, "venv");
+  || path.join(PROJECT || os.homedir(), "opencode_memory.db");
+const VENV = path.join(PROJECT || os.homedir(), "venv");
 const PY = process.env.MEMORY_SKILL_PYTHON
-  || path.join(VENV, "bin", "python");
+  || (process.platform === "win32"
+    ? path.join(VENV, "Scripts", "python.exe")
+    : path.join(VENV, "bin", "python"));
+const IS_WIN = process.platform === "win32";
 const BRIDGE = path.join(__dirname, "bridge.py");
 const REQUIREMENTS = path.join(PROJECT, "requirements.txt");
 
@@ -48,13 +61,18 @@ let modelDownloadTried = false; // one download attempt per process
 // First-run bootstrap: create venv + install deps if missing
 function ensureSetup() {
   if (setupDone) return ensureModel();
+  if (!PROJECT || !fs.existsSync(PROJECT)) {
+    setupDone = true;
+    console.error("[solo-memory] MEMORY_SKILL_PROJECT (" + (PROJECT || "unset") + ") is not an existing directory. Set MEMORY_SKILL_PROJECT (and optionally MEMORY_SKILL_PYTHON / MEMORY_SKILL_DB_PATH) in the opencode.json mcp.environment for the solo-memory entry. Auto weave/ingest hooks stay disabled; memory_* MCP tools configured separately still work.");
+    return false;
+  }
   if (!fs.existsSync(PY)) {
     if (setupInProgress) return false;
     setupInProgress = true;
     try {
       console.error("[solo-memory] First run: creating venv + installing deps…");
-      execSync(`python3 -m venv "${VENV}"`, { cwd: PROJECT });
-      execSync(`"${PY}" -m pip install -q -r "${REQUIREMENTS}"`, { cwd: PROJECT });
+      createVenv();
+      execFileSync(PY, ["-m", "pip", "install", "-q", "-r", REQUIREMENTS], { cwd: PROJECT });
       setupInProgress = false;
       setupDone = true;
       console.error("[solo-memory] Setup complete.");
@@ -67,6 +85,20 @@ function ensureSetup() {
   }
   setupDone = true;
   return ensureModel();
+}
+
+function createVenv() {
+  const tries = IS_WIN
+    ? [["py", ["-3"]], ["python", []]]
+    : [["python3", []]];
+  let lastErr;
+  for (const [cmd, pre] of tries) {
+    try {
+      execFileSync(cmd, [...pre, "-m", "venv", VENV], { cwd: PROJECT, stdio: "pipe" });
+      return;
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error("venv creation failed — need Python 3.11+ on PATH (" + (lastErr?.message || "no interpreter") + ")");
 }
 
 function modelOk() {
@@ -87,12 +119,17 @@ function ensureModel() {
       modelDownloadTried = true;
       console.error("[solo-memory] Embedding model missing — downloading bge-large-en-v1.5 (≈1.3GB, may take a while)…");
       const env = { ...process.env, HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com" };
-      execFileSync("bash", [path.join(PROJECT, "download_model.sh")], { cwd: PROJECT, timeout: 900000, stdio: "inherit", env });
+      if (IS_WIN) {
+        execFileSync(PY, ["-m", "pip", "install", "-q", "optimum[onnxruntime]", "huggingface_hub"], { cwd: PROJECT, timeout: 600000, stdio: "pipe", env });
+        execFileSync(PY, [path.join(PROJECT, "scripts", "download_model.py")], { cwd: PROJECT, timeout: 900000, stdio: "inherit", env });
+      } else {
+        execFileSync("bash", [path.join(PROJECT, "download_model.sh")], { cwd: PROJECT, timeout: 900000, stdio: "inherit", env });
+      }
       console.error("[solo-memory] Model download complete.");
     }
     return true;
   } catch (e) {
-    console.error("[solo-memory] ⚠ MODEL DOWNLOAD FAILED — memory will run DEGRADED (hash-only semantic search; dedup/can_answer disabled). Manual fix:\n  1) bash " + path.join(PROJECT, "download_model.sh") + "\n  2) or set HF_ENDPOINT to a reachable mirror\n  3) or export MEMORY_SKIP_MODEL=1 to acknowledge degraded mode");
+    console.error("[solo-memory] ⚠ MODEL DOWNLOAD FAILED — memory will run DEGRADED (hash-only semantic search; dedup/can_answer disabled). Manual fix:\n  1) " + (IS_WIN ? "\"" + PY + "\" \"" + path.join(PROJECT, "scripts", "download_model.py") + "\"" : "bash " + path.join(PROJECT, "download_model.sh")) + "\n  2) or set HF_ENDPOINT to a reachable mirror\n  3) or export MEMORY_SKIP_MODEL=1 to acknowledge degraded mode");
     return true;
   }
 }

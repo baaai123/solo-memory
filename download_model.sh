@@ -1,47 +1,10 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# Download the ONNX embedding model (bge-large-en-v1.5)
-# ─────────────────────────────────────────────────────────────────────────────
-# The model will be saved to models/bge-large-en-v1.5/
-#
-# Prerequisites:
-#   pip install huggingface_hub optimum[onnxruntime]
+# Thin wrapper — real logic lives in scripts/download_model.py (cross-platform:
+# Linux/macOS/Git-Bash/WSL AND native Windows PowerShell all share it).
 #
 # Usage:
-#   ./download_model.sh
-# ─────────────────────────────────────────────────────────────────────────────
-
+#   ./download_model.sh                     # default: models/bge-large-en-v1.5
+#   HF_ENDPOINT=https://hf-mirror.com ./download_model.sh   # 国内镜像
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-
-MODEL_DIR="models/bge-large-en-v1.5"
-MODEL_ID="BAAI/bge-large-en-v1.5"
-
-# 镜像支持：HF_ENDPOINT 环境变量（huggingface_hub 原生读取）。
-# 国内网络建议：HF_ENDPOINT=https://hf-mirror.com ./download_model.sh
-
-echo "HF endpoint: ${HF_ENDPOINT:-https://huggingface.co} (设置 HF_ENDPOINT=https://hf-mirror.com 可走国内镜像)"
-echo "Downloading $MODEL_ID → $MODEL_DIR ..."
-mkdir -p models
-
-python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download('$MODEL_ID', local_dir='$MODEL_DIR')
-print('Download complete.')
-"
-
-# Convert to ONNX if model.onnx doesn't exist
-if [ ! -f "$MODEL_DIR/model.onnx" ]; then
-    echo "Converting to ONNX format..."
-    python3 -m optimum.onnxruntime \
-        --model "$MODEL_DIR" \
-        --task feature-extraction \
-        "$MODEL_DIR"
-    echo "ONNX conversion complete."
-fi
-
-echo ""
-echo "Model ready at $MODEL_DIR"
-echo "Run: ./setup.sh"
+cd "$(dirname "$0")"
+exec python3 scripts/download_model.py "$@"
