@@ -159,10 +159,10 @@ def test_add_remove_roundtrip(tmp_path):
 
     assert handle_character_add_memory(
         skill, {"role_id": role_id, "memory_id": "dialogue:m1"}
-    ) == {"status": "added"}
+    ) == {"status": "added", "dimension": "general"}
     assert handle_character_add_memory(
         skill, {"role_id": role_id, "memory_id": "dialogue:m2"}
-    ) == {"status": "added"}
+    ) == {"status": "added", "dimension": "general"}
     assert skill.character.list_memories(role_id) == ["dialogue:m1", "dialogue:m2"]
 
     assert handle_character_remove_memory(

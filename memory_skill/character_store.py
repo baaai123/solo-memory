@@ -27,21 +27,31 @@ from typing import Any
 
 from memory_skill.contracts import utcnow
 
+# Persona dimensions for tavern roles (spec §3.2); general = pre-tavern plain ref.
+PERSONA_DIMENSIONS = ("general", "skills", "appearance", "personality")
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 # Module-level constant on purpose: schema edits rewrite this whole constant,
 # never via substring replacement on the class body.
 _CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS roles (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    personality  TEXT NOT NULL DEFAULT '',
+    scenario     TEXT NOT NULL DEFAULT '',
+    mes_example  TEXT NOT NULL DEFAULT '',
+    creator_notes TEXT NOT NULL DEFAULT '',
+    is_tavern    INTEGER NOT NULL DEFAULT 0,
+    st_name      TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS role_memories (
     role_id    TEXT NOT NULL,
     memory_id  TEXT NOT NULL,
+    dimension  TEXT NOT NULL DEFAULT 'general',
     added_at   REAL NOT NULL,
     PRIMARY KEY (role_id, memory_id)
 );
@@ -68,12 +78,59 @@ class CharacterStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_CREATE_TABLES_SQL)
+        self._migrate_is_tavern()
+        self._migrate_st_name()
+        self._migrate_dimension()
+        self._migrate_card_fields()
+
+    def _migrate_card_fields(self) -> None:
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(roles)").fetchall()]
+        for col in ("personality", "scenario", "mes_example", "creator_notes"):
+            if col not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE roles ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+                )
+        self._conn.commit()
+
+    def _migrate_is_tavern(self) -> None:
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(roles)").fetchall()]
+        if "is_tavern" not in cols:
+            self._conn.execute(
+                "ALTER TABLE roles ADD COLUMN is_tavern INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.commit()
+
+    def _migrate_st_name(self) -> None:
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(roles)").fetchall()]
+        if "st_name" not in cols:
+            self._conn.execute(
+                "ALTER TABLE roles ADD COLUMN st_name TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+
+    def _migrate_dimension(self) -> None:
+        cols = [r[1] for r in
+                self._conn.execute("PRAGMA table_info(role_memories)").fetchall()]
+        if "dimension" not in cols:
+            self._conn.execute(
+                "ALTER TABLE role_memories "
+                "ADD COLUMN dimension TEXT NOT NULL DEFAULT 'general'"
+            )
+            self._conn.commit()
 
     # ── Roles ─────────────────────────────────────────────────────────────
 
-    def create_role(self, name: str, description: str = "") -> str:
+    def create_role(self, name: str, description: str = "",
+                    is_tavern: bool = False,
+                    st_name: str = "",
+                    personality: str = "", scenario: str = "",
+                    mes_example: str = "", creator_notes: str = "") -> str:
         """Create a new character and return its id.
 
+        *st_name* optionally binds the role to a SillyTavern character name
+        (used by the tavern bridge's role lookup); ignored outside tavern use.
+        The *personality/scenario/mes_example/creator_notes* fields mirror a
+        Tavern v1 card so imported characters keep their definitions.
         Raises:
             ValueError: If *name* is empty or whitespace-only.
         """
@@ -82,9 +139,11 @@ class CharacterStore:
         now = utcnow().timestamp()
         role_id = f"character:{int(now)}_{uuid.uuid4().hex[:6]}"
         self._conn.execute(
-            "INSERT INTO roles (id, name, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (role_id, name, description, now, now),
+            "INSERT INTO roles (id, name, description, personality, scenario, "
+            "mes_example, creator_notes, is_tavern, st_name, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (role_id, name, description, personality, scenario, mes_example,
+             creator_notes, 1 if is_tavern else 0, st_name or "", now, now),
         )
         self._conn.commit()
         return role_id
@@ -96,8 +155,10 @@ class CharacterStore:
         (LEFT JOIN COUNT on ``role_memories``).
         """
         rows = self._conn.execute(
-            "SELECT r.id, r.name, r.description, r.created_at, r.updated_at, "
-            "       COUNT(rm.memory_id) AS ref_count "
+            "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
+            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.created_at, "
+             "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
             "LEFT JOIN role_memories rm ON rm.role_id = r.id "
             "GROUP BY r.id "
@@ -108,8 +169,10 @@ class CharacterStore:
     def get_role(self, role_id: str) -> dict[str, Any] | None:
         """Return a character's details (with ``ref_count``), or ``None``."""
         row = self._conn.execute(
-            "SELECT r.id, r.name, r.description, r.created_at, r.updated_at, "
-            "       COUNT(rm.memory_id) AS ref_count "
+            "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
+            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.created_at, "
+             "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
             "LEFT JOIN role_memories rm ON rm.role_id = r.id "
             "WHERE r.id = ? "
@@ -118,14 +181,42 @@ class CharacterStore:
         ).fetchone()
         return _row_to_role(row) if row is not None else None
 
+    def get_role_by_st_name(self, st_name: str) -> dict[str, Any] | None:
+        """Return the role bound to a SillyTavern character name.
+
+        Matching is case-insensitive so a SillyTavern rename keeps the
+        binding.  Returns ``None`` when no role is bound to *st_name*.
+        """
+        row = self._conn.execute(
+            "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
+            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.created_at, r.updated_at, COUNT(rm.memory_id) AS ref_count "
+            "FROM roles r "
+            "LEFT JOIN role_memories rm ON rm.role_id = r.id "
+            "WHERE LOWER(r.st_name) = LOWER(?) "
+            "GROUP BY r.id "
+            "ORDER BY r.updated_at DESC "
+            "LIMIT 1",
+            (st_name,),
+        ).fetchone()
+        return _row_to_role(row) if row is not None else None
+
     def update_role(
         self,
         role_id: str,
         name: str | None = None,
         description: str | None = None,
+        is_tavern: bool | None = None,
+        st_name: str | None = None,
+        personality: str | None = None,
+        scenario: str | None = None,
+        mes_example: str | None = None,
+        creator_notes: str | None = None,
     ) -> bool:
-        """Update a character's name/description (only provided fields).
+        """Update a character's card fields.
 
+        ``st_name=None`` leaves the binding untouched; pass ``""`` to clear.
+        ``None`` on any card field also leaves it untouched.
         Returns ``False`` when the character does not exist.
 
         Raises:
@@ -144,6 +235,24 @@ class CharacterStore:
         if description is not None:
             assignments.append("description = ?")
             params.append(description)
+        if personality is not None:
+            assignments.append("personality = ?")
+            params.append(personality)
+        if scenario is not None:
+            assignments.append("scenario = ?")
+            params.append(scenario)
+        if mes_example is not None:
+            assignments.append("mes_example = ?")
+            params.append(mes_example)
+        if creator_notes is not None:
+            assignments.append("creator_notes = ?")
+            params.append(creator_notes)
+        if is_tavern is not None:
+            assignments.append("is_tavern = ?")
+            params.append(1 if is_tavern else 0)
+        if st_name is not None:
+            assignments.append("st_name = ?")
+            params.append(st_name)
         if assignments:
             assignments.append("updated_at = ?")
             params.append(utcnow().timestamp())
@@ -181,18 +290,22 @@ class CharacterStore:
 
     # ── Memory references ─────────────────────────────────────────────────
 
-    def add_memory(self, role_id: str, memory_id: str) -> bool:
+    def add_memory(self, role_id: str, memory_id: str,
+                   dimension: str = "general") -> bool:
         """Add a memory reference to a character (idempotent).
 
         ``INSERT OR IGNORE`` on the composite primary key makes repeated
-        calls no-ops.  Returns ``False`` when the character does not exist.
+        calls no-ops — the first dimension wins on a duplicate add.  Tavern
+        persona dimensions are ``skills`` / ``appearance`` / ``personality``
+        (any other value is stored verbatim for forward compatibility).
+        Returns ``False`` when the character does not exist.
         """
         if not self._role_exists(role_id):
             return False
         self._conn.execute(
-            "INSERT OR IGNORE INTO role_memories (role_id, memory_id, added_at) "
-            "VALUES (?, ?, ?)",
-            (role_id, memory_id, utcnow().timestamp()),
+            "INSERT OR IGNORE INTO role_memories "
+            "(role_id, memory_id, dimension, added_at) VALUES (?, ?, ?, ?)",
+            (role_id, memory_id, dimension, utcnow().timestamp()),
         )
         self._conn.commit()
         return True
@@ -212,17 +325,51 @@ class CharacterStore:
         self._conn.commit()
         return True
 
-    def list_memories(self, role_id: str) -> list[str]:
+    def set_memory_dimension(self, role_id: str, memory_id: str,
+                             dimension: str) -> bool:
+        """Retag a reference's persona dimension.
+
+        Returns ``False`` when the character or the reference does not
+        exist (so the UI can surface "not found" without guessing).
+        """
+        cursor = self._conn.execute(
+            "UPDATE role_memories SET dimension = ? "
+            "WHERE role_id = ? AND memory_id = ?",
+            (dimension, role_id, memory_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def list_memories(self, role_id: str,
+                      dimension: str | None = None) -> list[str]:
         """Return a character's referenced memory ids (oldest first).
 
-        Returns an empty list for an unknown character.
+        With *dimension* (e.g. ``"skills"``) only ids tagged with that
+        persona dimension are returned.  Returns an empty list for an unknown
+        character.
         """
+        if dimension is None:
+            rows = self._conn.execute(
+                "SELECT memory_id FROM role_memories "
+                "WHERE role_id = ? ORDER BY added_at ASC",
+                (role_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT memory_id FROM role_memories "
+                "WHERE role_id = ? AND dimension = ? ORDER BY added_at ASC",
+                (role_id, dimension),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def list_memory_dims(self, role_id: str) -> list[dict[str, str]]:
+        """Return (memory_id, dimension) pairs for a character, oldest first."""
         rows = self._conn.execute(
-            "SELECT memory_id FROM role_memories "
+            "SELECT memory_id, dimension FROM role_memories "
             "WHERE role_id = ? ORDER BY added_at ASC",
             (role_id,),
         ).fetchall()
-        return [row[0] for row in rows]
+        return [{"memory_id": r[0], "dimension": r[1]} for r in rows]
 
     def list_role_ids(self, memory_id: str) -> list[str]:
         """Return all character ids referencing *memory_id*."""
@@ -326,11 +473,18 @@ class CharacterStore:
 
 def _row_to_role(row: tuple) -> dict[str, Any]:
     """Convert a roles query row to a dict."""
-    id_, name, description, created_at, updated_at, ref_count = row
+    (id_, name, description, personality, scenario, mes_example,
+     creator_notes, is_tavern, st_name, created_at, updated_at, ref_count) = row
     return {
         "id": id_,
         "name": name,
         "description": description,
+        "personality": personality,
+        "scenario": scenario,
+        "mes_example": mes_example,
+        "creator_notes": creator_notes,
+        "is_tavern": bool(is_tavern),
+        "st_name": st_name or "",
         "created_at": created_at,
         "updated_at": updated_at,
         "ref_count": ref_count,

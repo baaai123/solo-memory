@@ -302,3 +302,59 @@ def test_health_reports_tables_and_counts(store: CharacterStore):
     assert h1["roles"] == 1
     assert h1["role_memories"] == 1
     assert h1["agent_bindings"] == 1
+
+
+# ── Persona dimensions (tavern mode) ──────────────────────────────────────
+
+
+def test_add_memory_defaults_to_general(store: CharacterStore):
+    """Given no dimension, When add_memory, Then stored as general."""
+    rid = store.create_role("A")
+    assert store.add_memory(rid, "memory:1") is True
+    assert store.list_memories(rid) == ["memory:1"]
+    assert store.list_memories(rid, dimension="general") == ["memory:1"]
+    assert store.list_memories(rid, dimension="skills") == []
+    pairs = store.list_memory_dims(rid)
+    assert pairs == [{"memory_id": "memory:1", "dimension": "general"}]
+
+
+def test_add_memory_with_persona_dimension(store: CharacterStore):
+    """Given a persona dimension, When add_memory, Then tagged and filterable."""
+    rid = store.create_role("A")
+    store.add_memory(rid, "memory:skill", dimension="skills")
+    store.add_memory(rid, "memory:app", dimension="appearance")
+    store.add_memory(rid, "memory:per", dimension="personality")
+    store.add_memory(rid, "memory:gen")
+
+    assert store.list_memories(rid) == [
+        "memory:skill", "memory:app", "memory:per", "memory:gen",
+    ]
+    assert store.list_memories(rid, dimension="skills") == ["memory:skill"]
+    assert store.list_memories(rid, dimension="appearance") == ["memory:app"]
+    assert store.list_memories(rid, dimension="personality") == ["memory:per"]
+    pairs = store.list_memory_dims(rid)
+    assert {p["dimension"] for p in pairs} == {
+        "general", "skills", "appearance", "personality",
+    }
+
+
+def test_add_memory_idempotent_keeps_first_dimension(store: CharacterStore):
+    """Given a duplicate add with a different dimension, Then the original
+    dimension is kept (INSERT OR IGNORE, composite PK wins)."""
+    rid = store.create_role("A")
+    store.add_memory(rid, "memory:1", dimension="skills")
+    store.add_memory(rid, "memory:1", dimension="personality")
+    assert store.list_memories(rid, dimension="skills") == ["memory:1"]
+    assert store.list_memories(rid, dimension="personality") == []
+
+
+def test_set_memory_dimension_retags(store: CharacterStore):
+    """Given an existing ref, When set_memory_dimension, Then the tag
+    changes; unknown refs return False."""
+    rid = store.create_role("A")
+    store.add_memory(rid, "memory:1")
+    assert store.set_memory_dimension(rid, "memory:1", "skills") is True
+    assert store.list_memories(rid, dimension="skills") == ["memory:1"]
+    assert store.list_memories(rid, dimension="general") == []
+    assert store.set_memory_dimension(rid, "memory:ghost", "skills") is False
+    assert store.set_memory_dimension("character:ghost", "memory:1", "skills") is False
