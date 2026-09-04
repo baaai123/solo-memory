@@ -502,6 +502,10 @@ def _build_tier2(retriever: RetrievalSource, dialogue: DialogueSource,
         max_turns = min(unit_end, len(recent))
         for i in range(unit_start, min(unit_start + 3, max_turns)):
             t = recent[i]
+            # Role isolation: never surface turns outside the whitelist in a
+            # character-bound unit (other roles' dialogue must stay hidden).
+            if role_memory_ids is not None and f"dialogue:{t.id}" not in role_memory_ids:
+                continue
             if t.role == "user":
                 label = "User"
             elif t.role == "assistant":
