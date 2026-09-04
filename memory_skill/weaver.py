@@ -77,6 +77,8 @@ class WeaverStores:
     character: object = None  # CharacterStore — role whitelist source (Unit 4)
     protocol: object = None  # ProtocolState — todo-gate flags (Unit 2)
     learning_queue: object = None  # LearningQueue — open-item count (Unit 2)
+    state_store: object = None  # StateStore — tavern state snapshot (Tavern Unit 3)
+    relation_store: object = None  # RelationStore — tavern relation graph (Tavern Unit 3)
 
 
 @dataclass
@@ -92,6 +94,7 @@ class WeaveContext:
 
     time_context: str = ""
     tier1_context: str = ""
+    tavern_context: str = ""  # Tavern Mode [当前状态] — per-role state snapshot
     tier2_context: str = ""
     memory_nudge: str = ""
     tree_context: str = ""
@@ -134,6 +137,8 @@ class WeaveContext:
             parts.append(self.embedder_banner)
         if self.time_context:
             parts.append(self.time_context)
+        if self.tavern_context:
+            parts.append(self.tavern_context)
         # tier2 first (if available), tier1 as fallback
         if self.tier2_context:
             parts.append(self.tier2_context)
@@ -217,6 +222,8 @@ def weave(
     ctx.tier1_context = _build_tier1(
         stores.dialogue_store, stores.saw_buffer, stores.agent_name, scene_summary)
 
+    ctx.tavern_context = _build_tavern_context(character_role, stores)
+
     # Directives must render even for brand-new sessions: pending learning /
     # decomposition items are the whole point of a fresh mission, and a
     # no-history early return would silently drop them.
@@ -245,6 +252,96 @@ def weave(
     if turn_count > 10 and _has_high_weight(stores.learned_store, user_message):
         ctx.needs_second_pass = True
     return ctx
+
+
+_STATE_LABELS = {
+    "mood": "心情", "need": "需求", "health": "健康", "clothing": "穿着",
+    "item": "持有物", "action": "动作", "scene": "场景", "weather": "环境",
+}
+
+
+def _role_display_name(character, role_id: str) -> str:
+    if character is None:
+        return role_id
+    try:
+        role = character.get_role(role_id)
+    except Exception:
+        return role_id
+    return role["name"] if role else role_id
+
+
+def _build_tavern_context(character_role: str | None, stores: WeaverStores) -> str:
+    if not character_role:
+        return ""
+    blocks: list[str] = []
+    persona = _build_persona_context(character_role, stores)
+    if persona:
+        blocks.append(persona)
+    if stores.state_store is not None:
+        try:
+            state = stores.state_store.get_state(character_role)
+        except Exception:
+            state = None
+        if state:
+            kv = [f"{_STATE_LABELS[k]}:{v}" for k, v in state.items()
+                  if k in _STATE_LABELS and v]
+            if kv:
+                blocks.append("[当前状态] " + " | ".join(kv))
+    if stores.relation_store is not None:
+        try:
+            rels = stores.relation_store.get_outgoing(character_role)
+        except Exception:
+            rels = []
+        if rels:
+            shown = [f"{_role_display_name(stores.character, r['to_role_id'])}"
+                     f":{r['relation_type']}({r['strength']})" for r in rels[:5]]
+            if shown:
+                blocks.append("[社交关系] " + "、".join(shown))
+    return "\n".join(blocks)
+
+
+_PERSONA_LABELS = {
+    "skills": "技能", "appearance": "外貌", "personality": "性格",
+}
+
+
+def _build_persona_context(character_role: str,
+                           stores: WeaverStores) -> str:
+    """Assemble the [角色设定] block from role-bound persona memories.
+
+    Only tavern persona dimensions (skills/appearance/personality) are
+    grouped; ``general`` references stay out so plain dev-mode roles are
+    unaffected. Content is read lazily and a single lookup failure degrades
+    to skipping that dimension (weave must never block on a store hiccup).
+    """
+    if stores.character is None or stores.learned_store is None:
+        return ""
+    try:
+        pairs = stores.character.list_memory_dims(character_role)
+    except Exception:
+        return ""
+    groups: dict[str, list[str]] = {}
+    for pair in pairs:
+        dim = pair.get("dimension") or "general"
+        if dim not in _PERSONA_LABELS:
+            continue
+        mid = pair.get("memory_id", "")
+        try:
+            entry = stores.learned_store.get_entry(mid)
+        except Exception:
+            entry = None
+        text = getattr(entry, "content", "") if entry is not None else ""
+        if not text:
+            continue
+        groups.setdefault(dim, []).append(str(text).strip())
+    lines: list[str] = []
+    for dim, label in _PERSONA_LABELS.items():
+        texts = groups.get(dim)
+        if not texts:
+            continue
+        joined = "；".join(t[:120] for t in texts)
+        lines.append(f"[角色设定·{label}] {joined}")
+    return "\n".join(lines)
 
 
 def _resolve_role_memory_ids(

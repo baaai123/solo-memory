@@ -79,6 +79,8 @@ class MemorySystem:
     pending_store: object = None
     mission_store: object = None
     character: object = None
+    state_store: object = None
+    relation_store: object = None
     protocol: object = None
     _composed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -170,12 +172,45 @@ class MemorySystem:
             character=getattr(self, 'character', None),
             protocol=self.protocol,
             learning_queue=getattr(self, 'learning_queue', None),
+            state_store=getattr(self, 'state_store', None),
+            relation_store=getattr(self, 'relation_store', None),
         )
         ctx = weave(stores, user_message, scene_summary, partner=partner,
                     character_role=self._resolve_character_role())
         ProtocolGate(self).after_weave(user_message)
         self._maybe_arm_todo_gates()
         return ctx
+
+    def weave_for_role(self, role_id: str, user_message: str,
+                       scene_summary: str = "") -> object:
+        """Weave context for an explicit character role (tavern bridge).
+
+        Unlike ``weave()`` (which resolves the role from the agent binding),
+        this forces ``character_role=role_id`` so a SillyTavern request can
+        inject any bound character's persona/state.  No protocol gates run.
+        """
+        from memory_skill.weaver import WeaverStores, weave
+        stores = WeaverStores(
+            saw_buffer=self.saw_buffer,
+            dialogue_store=self.dialogue_store,
+            learned_store=self.learned_store,
+            retriever=self.retriever,
+            agent_name=self.config.agent_name,
+            namespace=self.config.namespace,
+            tree=self.tree,
+            gaps=self.gaps,
+            pending_store=getattr(self, 'pending_store', None),
+            mission_store=self._ensure_mission_store(),
+            degraded=self.embedder.degraded,
+            degraded_reason=self.embedder.reason,
+            character=getattr(self, 'character', None),
+            protocol=self.protocol,
+            learning_queue=getattr(self, 'learning_queue', None),
+            state_store=getattr(self, 'state_store', None),
+            relation_store=getattr(self, 'relation_store', None),
+        )
+        return weave(stores, user_message, scene_summary,
+                     character_role=role_id)
 
     def _maybe_arm_todo_gates(self) -> None:
         """Arm the archive/queue hard gates after a successful weave.
@@ -368,6 +403,23 @@ class MemorySystem:
         path (transparent proxy). Truncation follows the unified head+tail
         policy (see ADR-0001).
         """
+        self._persist_turn(user_msg, assistant_msg,
+                           character_role=self._resolve_character_role())
+
+    def ingest_for_role(self, role_id: str, user_msg: str,
+                        assistant_msg: str) -> None:
+        """Persist a tavern/roleplay turn under an explicit character role.
+
+        Mirrors ``auto_ingest`` but forces ``character_role=role_id``, so the
+        dialogue becomes a reference of that role (visible to its weave).
+        Used by the tavern chat endpoint where there is no agent binding to
+        resolve the role from (the user roleplays through the web UI).
+        """
+        self._persist_turn(user_msg, assistant_msg, character_role=role_id)
+
+    def _persist_turn(self, user_msg: str, assistant_msg: str,
+                      character_role: str | None) -> None:
+        """Shared body of auto_ingest / ingest_for_role."""
         from memory_skill.contracts import DialogueTurn, clip_auto_ingest
 
         now = datetime.now(UTC)
@@ -381,7 +433,11 @@ class MemorySystem:
                     content=clip_auto_ingest(content),
                     timestamp=now,
                 )
-                self.ingest(turn, enrich=False)
+                if character_role:
+                    self.ingestor.ingest_dialogue(
+                        turn, character_role=character_role)
+                else:
+                    self.ingest(turn, enrich=False)
             except Exception as exc:
                 _logger.warning("auto_ingest failed for %s: %s", role, exc)
 
@@ -457,8 +513,10 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     from memory_skill.ingestor import Ingestor
     from memory_skill.learned_store import LearnedStore
     from memory_skill.pending_store import PendingStore
+    from memory_skill.relation_store import RelationStore
     from memory_skill.retriever import Retriever
     from memory_skill.saw_buffer import SawRingBuffer
+    from memory_skill.state_store import StateStore
 
     embedder = Embedder(config)
     saw_buffer = SawRingBuffer(capacity=config.saw_buffer_capacity)
@@ -473,6 +531,8 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
     character_store = CharacterStore(
         db_path=getattr(config, "character_db_path", None) or config.db_path
     )
+    state_store = StateStore(config.db_path)
+    relation_store = RelationStore(config.db_path)
     ingestor = Ingestor(config=config, saw_buffer=saw_buffer,
                         dialogue_store=dialogue_store,
                         learned_store=learned_store, embedder=embedder,
@@ -485,7 +545,8 @@ def _build_system(config: MemorySkillConfig) -> MemorySystem:
         dialogue_store=dialogue_store, learned_store=learned_store,
         tree=tree, ingestor=ingestor, retriever=retriever,
         learning_queue=learning_queue, pending_store=pending_store,
-        character=character_store,
+        character=character_store, state_store=state_store,
+        relation_store=relation_store,
         protocol=ProtocolState(),
         _composed_at=datetime.now(UTC),
     )
