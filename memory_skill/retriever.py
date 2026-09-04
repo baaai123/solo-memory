@@ -59,6 +59,9 @@ _logger = logging.getLogger(__name__)
 
 # Broad-search fetch size before RRF fusion
 _BROAD_TOP_K: int = 50
+# Skill memories are authoritative knowledge; this boost lifts them above
+# similarly-scored dialogue turns when both match a query.
+_SKILL_BOOST: float = 2.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -216,6 +219,29 @@ class Retriever:
             if e.id not in candidates:
                 candidates[e.id] = e
 
+        # ── 2c. Role whitelist candidate completion ──────────────────────
+        # Semantic top-N often misses a role's high-weight *skill* memories
+        # (crowded out by many similar dialogue units). When a whitelist is
+        # active its size is small (≤~200), so pulling every referenced
+        # memory into the candidate pool guarantees such skills are ranked —
+        # the skill scoring boost below then lifts them above the dialogue
+        # noise. Unknown ids (deleted entries) are skipped.
+        if role_memory_ids is not None and len(role_memory_ids) <= 200:
+            for mid in role_memory_ids:
+                try:
+                    learned_e = self._learned_store.get_entry(mid)
+                except Exception:
+                    learned_e = None
+                if learned_e is None:
+                    continue
+                existing = candidates.get(mid)
+                # BM25-leg entries only carry dialogue metadata (no real
+                # category / turn_id); prefer the learned copy so skill
+                # weighting and turn expansion see the true attributes.
+                if existing is None or existing.category == "dialogue" and not (
+                        existing.metadata or {}).get("turn_id"):
+                    candidates[mid] = learned_e
+
         if not candidates:
             return MemoryEnvelope(
                 type="recall",
@@ -253,6 +279,17 @@ class Retriever:
         # ── 5. Compute weighted RRF scores ────────────────────────────────
         k = float(self._rrf_k)
 
+        # Query terms for the keyword lift below: meaningful ascii words
+        # (len>=3) plus CJK character bi-grams (coarse but cheap).
+        _query_terms: set[str] = set()
+        if query:
+            import re as _re
+            for w in _re.findall(r"[A-Za-z0-9]{3,}", query):
+                _query_terms.add(w.lower())
+            cjk = _re.findall(r"[\u4e00-\u9fff]", query)
+            for i in range(len(cjk) - 1):
+                _query_terms.add(cjk[i] + cjk[i + 1])
+
         scored: list[tuple[MemoryEntry, float]] = []
         for entry in candidate_list:
             eid = entry.id
@@ -267,6 +304,18 @@ class Retriever:
 
             # ── Per-entry evolution weight boost ──────────────────────────
             score *= (0.5 + entry.weight)
+            # Skill memories are authoritative: lift them above dialogue
+            # noise when they surface (their weight already encodes reuse).
+            if entry.category == "skill":
+                score *= _SKILL_BOOST
+            # Keyword lift: when a whitelist pins skills that semantic
+            # ranking under-scores (bge is weak on Chinese technical docs),
+            # reward entries whose content actually matches query terms.
+            if role_memory_ids is not None and _query_terms:
+                content = entry.content or ""
+                hits = sum(1 for t in _query_terms if t in content)
+                if hits:
+                    score *= (1.0 + 0.5 * hits)
 
             scored.append((entry, score))
 
