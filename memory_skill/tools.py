@@ -753,14 +753,15 @@ def handle_character_add_memory(skill, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": "character store not available"}
     role_id = str(args.get("role_id") or "").strip()
     memory_id = str(args.get("memory_id") or "").strip()
+    dimension = str(args.get("dimension") or "general").strip() or "general"
     if not role_id:
         return {"error": "role_id is required"}
     if not memory_id:
         return {"error": "memory_id is required"}
     try:
-        if not character.add_memory(role_id, memory_id):
+        if not character.add_memory(role_id, memory_id, dimension=dimension):
             return {"error": f"role not found: {role_id}"}
-        return {"status": "added"}
+        return {"status": "added", "dimension": dimension}
     except Exception as exc:
         logger.exception("character_add_memory failed")
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -826,6 +827,35 @@ def handle_character_agent_role(skill, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def handle_state_extract(skill, args: dict[str, Any]) -> dict[str, Any]:
+    """Extract (and optionally apply) a tavern role's current state.
+
+    Sub-agent pattern: ``apply=false`` returns a JSON preview for agent
+    review; ``apply=true`` overwrites the role's state snapshot.  State
+    extraction never runs inside ingest/weave (ADR-0002).
+    """
+    store = getattr(skill, "state_store", None)
+    if store is None:
+        return {"error": "state_store not available (not composed)"}
+    role_id = str(args.get("role_id") or "")
+    conversation = str(args.get("conversation") or "")
+    if not role_id or not conversation:
+        return {"error": "role_id and conversation required"}
+    from memory_skill.tavern_extract import extract_state
+
+    try:
+        current = store.get_state(role_id)
+        extracted = extract_state(conversation, current)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    if not extracted:
+        return {"error": "state extraction failed (bridge down or bad response)"}
+    if args.get("apply"):
+        store.update_state(role_id, extracted)
+        return {"applied": True, "state": store.get_state(role_id)}
+    return {"applied": False, "preview": extracted}
+
+
 # ── Dispatch map ───────────────────────────────────────────────────────
 
 DISPATCH = {
@@ -863,6 +893,7 @@ DISPATCH = {
     "memory_character_remove_memory": handle_character_remove_memory,
     "memory_character_bind_agent": handle_character_bind_agent,
     "memory_character_agent_role": handle_character_agent_role,
+    "memory_state_extract": handle_state_extract,
 }
 
 # ── Tool schemas (single source of truth) ────────────────────────
@@ -986,8 +1017,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}}, "required": ["role_id"]},
     },
     "memory_character_add_memory": {
-        "description": "向角色添加一条全局记忆引用（幂等，不复制内容）。角色绑定后 weave 只注入其引用集合内的记忆。",
-        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}, "memory_id": {"type": "string", "description": "全局记忆 entry id（如 dialogue:xxx）。"}}, "required": ["role_id", "memory_id"]},
+        "description": "向角色添加一条全局记忆引用（幂等，不复制内容）。dimension 为人设维度（skills/appearance/personality，酒馆模式用；默认 general）。角色绑定后 weave 只注入其引用集合内的记忆。",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "角色 id。"}, "memory_id": {"type": "string", "description": "全局记忆 entry id（如 dialogue:xxx）。"}, "dimension": {"type": "string", "description": "人设维度：general/skills/appearance/personality（默认 general）。"}}, "required": ["role_id", "memory_id"]},
     },
     "memory_character_remove_memory": {
         "description": "从角色移除一条记忆引用（幂等）。角色不存在时返回 error。",
@@ -1004,6 +1035,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "memory_weave": {
         "description": "Auto-assemble layered memory context for the current conversation. Call BEFORE responding to any user message. Returns a context block ready for system-prompt injection. tier1: scene perception, tier2: deep memory (gated), nudge: high-importance reminders.\n\nV10: Both user_message AND assistant_content are auto-ingested (ImportanceScorer filters trivial content). This mirrors the Room framework's conversation-block pattern where both sides of every exchange are persisted without manual ingest calls.",
         "inputSchema": {"type": "object", "properties": {"user_message": {"type": "string", "description": "The user's current message."}, "assistant_content": {"type": "string", "description": "Optional: your OWN response from the PREVIOUS exchange. Auto-ingested into memory so both sides of every conversation block are persisted. Pass your full last response."}, "scene_summary": {"type": "string", "description": "Optional: what the user is doing now."}}},
+    },
+    "memory_state_extract": {
+        "description": "Extract (and optionally apply) a tavern role's current 8-dim state (mood/need/health/clothing/item/action/scene/weather) from a dialogue snippet via the LLM bridge. apply=false returns a preview for agent review; apply=true overwrites the role's state snapshot. Tavern Mode Unit 4.",
+        "inputSchema": {"type": "object", "properties": {"role_id": {"type": "string", "description": "The role whose state to update."}, "conversation": {"type": "string", "description": "The recent dialogue to extract state from."}, "apply": {"type": "boolean", "description": "When true, overwrite the state store; when false, return a preview only (default false)."}}, "required": ["role_id", "conversation"]},
     },
 }
 
