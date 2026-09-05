@@ -81,6 +81,7 @@ B. 本回合中，该角色对在场其他人产生的、值得长期记住的�
 - impressions 只在出现实质内容时输出（具体发生的事 / 明确评价 / 关系变化 / 对方告知的习惯或规则）。对方随口寒暄不要记。
 - 若内容是【用户告知的习惯/规则/选择】(如"我调图绝不超分"、"我晚上工作") → 必须输出 kind="pref"，target_id="user"，即使该角色只在状态 action 里写了"记住"——习惯必须进入 impressions，不能只留在状态里。
 - 若是该角色对某人【主观的看法、经历、或两人之间的相处】→ kind="impression"。
+- 规则：当发言中对某人给出【明确的人格判断或印象描述】(如"他属于…的人"、"我对他的第一印象是…"、"他这人较真/温柔/难搞") 时，这是 impression，必须输出——即使它出现在闲聊回复里。
 - 只能针对在场者，target_id 必须来自在场者 id 清单；note 一句话 ≤ 60 字。
 - 只输出一个 JSON 对象，不要任何其他文字。
 
@@ -95,6 +96,12 @@ B. 本回合中，该角色对在场其他人产生的、值得长期记住的�
 测试2:这杯威士忌温了不好喝,我习惯加冰。
 测试1:(接过话题)加冰确实更利落。
 输出：{{"state": {{"mood": "平静", "need": null, "health": null, "clothing": null, "item": null, "action": null, "scene": null, "weather": null}}, "impressions": [{{"target_id": "测试2", "kind": "impression", "note": "测试2 喝威士忌喜欢加冰"}}]}}
+
+示例 3：
+对话：
+用户:测试1,你觉得默认角色这人怎么样?
+测试1:他属于那种把吧台当工位的人,自律得过分,也较真。
+输出：{{"state": {{"mood": "平静", "need": null, "health": null, "clothing": null, "item": null, "action": null, "scene": null, "weather": null}}, "impressions": [{{"target_id": "character:xxx", "kind": "impression", "note": "默认角色把吧台当工位,自律且较真"}}]}}
 
 {current_block}对话：
 {conversation}"""
