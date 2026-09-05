@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS roles (
     mes_example  TEXT NOT NULL DEFAULT '',
     creator_notes TEXT NOT NULL DEFAULT '',
     first_mes    TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    avatar       TEXT NOT NULL DEFAULT '',
     is_tavern    INTEGER NOT NULL DEFAULT 0,
     st_name      TEXT NOT NULL DEFAULT '',
     created_at   REAL NOT NULL,
@@ -88,7 +90,7 @@ class CharacterStore:
     def _migrate_card_fields(self) -> None:
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(roles)").fetchall()]
         for col in ("personality", "scenario", "mes_example", "creator_notes",
-                    "first_mes"):
+                    "first_mes", "system_prompt", "avatar"):
             if col not in cols:
                 self._conn.execute(
                     f"ALTER TABLE roles ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
@@ -134,13 +136,17 @@ class CharacterStore:
                     st_name: str = "",
                     personality: str = "", scenario: str = "",
                     mes_example: str = "", creator_notes: str = "",
-                    first_mes: str = "") -> str:
+                    first_mes: str = "",
+                    system_prompt: str = "", avatar: str = "") -> str:
         """Create a new character and return its id.
 
         *st_name* optionally binds the role to a SillyTavern character name
         (used by the tavern bridge's role lookup); ignored outside tavern use.
         The *personality/scenario/mes_example/creator_notes/first_mes* fields
         mirror a Tavern card so imported characters keep their definitions.
+        *system_prompt* holds the card's global play-rule block (injected at
+        the top of the role's system prompt); *avatar* an optional avatar
+        data URL/base64 kept for display.
         Raises:
             ValueError: If *name* is empty or whitespace-only.
         """
@@ -150,10 +156,12 @@ class CharacterStore:
         role_id = f"character:{int(now)}_{uuid.uuid4().hex[:6]}"
         self._conn.execute(
             "INSERT INTO roles (id, name, description, personality, scenario, "
-            "mes_example, creator_notes, first_mes, is_tavern, st_name, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "mes_example, creator_notes, first_mes, system_prompt, avatar, "
+            "is_tavern, st_name, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (role_id, name, description, personality, scenario, mes_example,
-             creator_notes, first_mes, 1 if is_tavern else 0, st_name, now, now),
+             creator_notes, first_mes, system_prompt, avatar,
+             1 if is_tavern else 0, st_name, now, now),
         )
         self._conn.commit()
         return role_id
@@ -166,7 +174,7 @@ class CharacterStore:
         """
         rows = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.system_prompt, r.avatar, r.is_tavern, r.st_name, "
             "       r.created_at, "
              "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
@@ -180,7 +188,7 @@ class CharacterStore:
         """Return a character's details (with ``ref_count``), or ``None``."""
         row = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.system_prompt, r.avatar, r.is_tavern, r.st_name, "
             "       r.created_at, "
              "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
@@ -199,7 +207,7 @@ class CharacterStore:
         """
         row = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.system_prompt, r.avatar, r.is_tavern, r.st_name, "
             "       r.created_at, r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
             "LEFT JOIN role_memories rm ON rm.role_id = r.id "
@@ -220,6 +228,8 @@ class CharacterStore:
         st_name: str | None = None,
         personality: str | None = None,
         scenario: str | None = None,
+        system_prompt: str | None = None,
+        avatar: str | None = None,
         mes_example: str | None = None,
         creator_notes: str | None = None,
         first_mes: str | None = None,
@@ -261,6 +271,12 @@ class CharacterStore:
         if first_mes is not None:
             assignments.append("first_mes = ?")
             params.append(first_mes)
+        if system_prompt is not None:
+            assignments.append("system_prompt = ?")
+            params.append(system_prompt)
+        if avatar is not None:
+            assignments.append("avatar = ?")
+            params.append(avatar)
         if is_tavern is not None:
             assignments.append("is_tavern = ?")
             params.append(1 if is_tavern else 0)
@@ -504,8 +520,8 @@ class CharacterStore:
 def _row_to_role(row: tuple) -> dict[str, Any]:
     """Convert a roles query row to a dict."""
     (id_, name, description, personality, scenario, mes_example,
-     creator_notes, first_mes, is_tavern, st_name, created_at, updated_at,
-     ref_count) = row
+     creator_notes, first_mes, system_prompt, avatar, is_tavern, st_name,
+     created_at, updated_at, ref_count) = row
     return {
         "id": id_,
         "name": name,
@@ -515,6 +531,8 @@ def _row_to_role(row: tuple) -> dict[str, Any]:
         "mes_example": mes_example,
         "creator_notes": creator_notes,
         "first_mes": first_mes or "",
+        "system_prompt": system_prompt or "",
+        "avatar": avatar or "",
         "is_tavern": bool(is_tavern),
         "st_name": st_name or "",
         "created_at": created_at,
