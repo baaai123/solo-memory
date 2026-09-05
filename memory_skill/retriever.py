@@ -12,8 +12,8 @@ Algorithm:
   4. RRF k=60:  weighted combination across all 3 ranked lists
   5. Top-N:     take the highest-scoring entries → MemoryEnvelope
 
-Weights (per Task 4 calibration):
-  semantic = 1.5,  BM25 = 1.5,  temporal = 0.5
+Weights (V8, MemPalace pattern — BM25 is primary for Chinese content):
+  semantic = 0.5,  BM25 = 2.5,  temporal = 0.5
 
 Usage::
 
