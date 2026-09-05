@@ -440,7 +440,7 @@ class MemorySystem:
         kind = kind if kind in ("pref", "impression") else "impression"
         if kind == "pref" and target_id != "user":
             kind = "impression"
-        category = "pref" if kind == "pref" else "general"
+        category = "pref" if kind == "pref" else "pers"
         now = datetime.now(UTC)
         turn = DialogueTurn(
             id=f"imp_{now:%Y%m%d_%H%M%S}_{hash(note) & 0xFFFF:04x}",
