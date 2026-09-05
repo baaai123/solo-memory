@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS role_memories (
     role_id    TEXT NOT NULL,
     memory_id  TEXT NOT NULL,
     dimension  TEXT NOT NULL DEFAULT 'general',
+    target     TEXT NOT NULL DEFAULT '',
     added_at   REAL NOT NULL,
     PRIMARY KEY (role_id, memory_id)
 );
@@ -117,6 +118,12 @@ class CharacterStore:
             self._conn.execute(
                 "ALTER TABLE role_memories "
                 "ADD COLUMN dimension TEXT NOT NULL DEFAULT 'general'"
+            )
+            self._conn.commit()
+        if "target" not in cols:
+            self._conn.execute(
+                "ALTER TABLE role_memories "
+                "ADD COLUMN target TEXT NOT NULL DEFAULT ''"
             )
             self._conn.commit()
 
@@ -298,24 +305,39 @@ class CharacterStore:
     # ── Memory references ─────────────────────────────────────────────────
 
     def add_memory(self, role_id: str, memory_id: str,
-                   dimension: str = "general") -> bool:
+                   dimension: str = "general", target: str = "") -> bool:
         """Add a memory reference to a character (idempotent).
 
         ``INSERT OR IGNORE`` on the composite primary key makes repeated
         calls no-ops — the first dimension wins on a duplicate add.  Tavern
         persona dimensions are ``skills`` / ``appearance`` / ``personality``
         (any other value is stored verbatim for forward compatibility).
+        *target* marks an entry as "about X" (a role id or the reserved
+        ``user``); an empty target means the entry is about the role itself.
         Returns ``False`` when the character does not exist.
         """
         if not self._role_exists(role_id):
             return False
         self._conn.execute(
             "INSERT OR IGNORE INTO role_memories "
-            "(role_id, memory_id, dimension, added_at) VALUES (?, ?, ?, ?)",
-            (role_id, memory_id, dimension, utcnow().timestamp()),
+            "(role_id, memory_id, dimension, target, added_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (role_id, memory_id, dimension, target or "", utcnow().timestamp()),
         )
         self._conn.commit()
         return True
+
+    def set_memory_target(self, role_id: str, memory_id: str,
+                          target: str) -> bool:
+        """Mark a reference as being about *target* (role id or ``user``).
+        Returns ``False`` when the reference does not exist."""
+        cursor = self._conn.execute(
+            "UPDATE role_memories SET target = ? "
+            "WHERE role_id = ? AND memory_id = ?",
+            (target or "", role_id, memory_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def remove_memory(self, role_id: str, memory_id: str) -> bool:
         """Remove a memory reference from a character.
@@ -370,13 +392,14 @@ class CharacterStore:
         return [row[0] for row in rows]
 
     def list_memory_dims(self, role_id: str) -> list[dict[str, str]]:
-        """Return (memory_id, dimension) pairs for a character, oldest first."""
+        """Return (memory_id, dimension, target) triples, oldest first."""
         rows = self._conn.execute(
-            "SELECT memory_id, dimension FROM role_memories "
+            "SELECT memory_id, dimension, target FROM role_memories "
             "WHERE role_id = ? ORDER BY added_at ASC",
             (role_id,),
         ).fetchall()
-        return [{"memory_id": r[0], "dimension": r[1]} for r in rows]
+        return [{"memory_id": r[0], "dimension": r[1], "target": r[2] or ""}
+                for r in rows]
 
     def list_role_ids(self, memory_id: str) -> list[str]:
         """Return all character ids referencing *memory_id*."""

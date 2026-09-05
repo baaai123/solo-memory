@@ -315,7 +315,8 @@ def test_add_memory_defaults_to_general(store: CharacterStore):
     assert store.list_memories(rid, dimension="general") == ["memory:1"]
     assert store.list_memories(rid, dimension="skills") == []
     pairs = store.list_memory_dims(rid)
-    assert pairs == [{"memory_id": "memory:1", "dimension": "general"}]
+    assert pairs == [{"memory_id": "memory:1", "dimension": "general",
+                      "target": ""}]
 
 
 def test_add_memory_with_persona_dimension(store: CharacterStore):

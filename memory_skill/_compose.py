@@ -417,6 +417,44 @@ class MemorySystem:
         """
         self._persist_turn(user_msg, assistant_msg, character_role=role_id)
 
+    def remember_impression(self, role_id: str, target_id: str,
+                            kind: str = "impression",
+                            note: str = "") -> str | None:
+        """Persist one 'about X' memory and pin it to a role's references.
+
+        *target_id* is a role id or the reserved ``"user"``.  ``kind`` is
+        ``"pref"`` (target must be ``user``: shared user habits — stored as a
+        pref entry) or ``"impression"`` (subjective view/event/relationship
+        note — stored as a plain general entry).  Either way the entry lands
+        in the global store and is referenced by *role_id* with ``target``
+        set, so weave can inject it under the right person's heading and the
+        character never mistakes it for its own experience.
+        Returns the new entry id, or None when the role is unknown.
+        """
+        from memory_skill.contracts import DialogueTurn
+        if not note.strip():
+            return None
+        role = self.character.get_role(role_id)
+        if role is None:
+            return None
+        kind = kind if kind in ("pref", "impression") else "impression"
+        if kind == "pref" and target_id != "user":
+            kind = "impression"
+        category = "pref" if kind == "pref" else "general"
+        now = datetime.now(UTC)
+        turn = DialogueTurn(
+            id=f"imp_{now:%Y%m%d_%H%M%S}_{hash(note) & 0xFFFF:04x}",
+            role="system", content=note.strip(), timestamp=now, saw_index=0,
+        )
+        try:
+            receipt = self.ingestor.ingest_dialogue(turn, category=category)
+            entry_id = getattr(receipt, "entry_id", None) or turn.id
+            self.character.add_memory(role_id, entry_id,
+                                      dimension="general", target=target_id)
+        except Exception:
+            return None
+        return entry_id
+
     def _persist_turn(self, user_msg: str, assistant_msg: str,
                       character_role: str | None) -> None:
         """Shared body of auto_ingest / ingest_for_role."""
