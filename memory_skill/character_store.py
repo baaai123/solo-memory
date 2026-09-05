@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS roles (
     scenario     TEXT NOT NULL DEFAULT '',
     mes_example  TEXT NOT NULL DEFAULT '',
     creator_notes TEXT NOT NULL DEFAULT '',
+    first_mes    TEXT NOT NULL DEFAULT '',
     is_tavern    INTEGER NOT NULL DEFAULT 0,
     st_name      TEXT NOT NULL DEFAULT '',
     created_at   REAL NOT NULL,
@@ -85,7 +86,8 @@ class CharacterStore:
 
     def _migrate_card_fields(self) -> None:
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(roles)").fetchall()]
-        for col in ("personality", "scenario", "mes_example", "creator_notes"):
+        for col in ("personality", "scenario", "mes_example", "creator_notes",
+                    "first_mes"):
             if col not in cols:
                 self._conn.execute(
                     f"ALTER TABLE roles ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
@@ -124,13 +126,14 @@ class CharacterStore:
                     is_tavern: bool = False,
                     st_name: str = "",
                     personality: str = "", scenario: str = "",
-                    mes_example: str = "", creator_notes: str = "") -> str:
+                    mes_example: str = "", creator_notes: str = "",
+                    first_mes: str = "") -> str:
         """Create a new character and return its id.
 
         *st_name* optionally binds the role to a SillyTavern character name
         (used by the tavern bridge's role lookup); ignored outside tavern use.
-        The *personality/scenario/mes_example/creator_notes* fields mirror a
-        Tavern v1 card so imported characters keep their definitions.
+        The *personality/scenario/mes_example/creator_notes/first_mes* fields
+        mirror a Tavern card so imported characters keep their definitions.
         Raises:
             ValueError: If *name* is empty or whitespace-only.
         """
@@ -140,10 +143,10 @@ class CharacterStore:
         role_id = f"character:{int(now)}_{uuid.uuid4().hex[:6]}"
         self._conn.execute(
             "INSERT INTO roles (id, name, description, personality, scenario, "
-            "mes_example, creator_notes, is_tavern, st_name, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "mes_example, creator_notes, first_mes, is_tavern, st_name, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (role_id, name, description, personality, scenario, mes_example,
-             creator_notes, 1 if is_tavern else 0, st_name or "", now, now),
+             creator_notes, first_mes, 1 if is_tavern else 0, st_name, now, now),
         )
         self._conn.commit()
         return role_id
@@ -156,7 +159,7 @@ class CharacterStore:
         """
         rows = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
             "       r.created_at, "
              "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
@@ -170,7 +173,7 @@ class CharacterStore:
         """Return a character's details (with ``ref_count``), or ``None``."""
         row = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
             "       r.created_at, "
              "       r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
@@ -189,7 +192,7 @@ class CharacterStore:
         """
         row = self._conn.execute(
             "SELECT r.id, r.name, r.description, r.personality, r.scenario, "
-            "       r.mes_example, r.creator_notes, r.is_tavern, r.st_name, "
+            "       r.mes_example, r.creator_notes, r.first_mes, r.is_tavern, r.st_name, "
             "       r.created_at, r.updated_at, COUNT(rm.memory_id) AS ref_count "
             "FROM roles r "
             "LEFT JOIN role_memories rm ON rm.role_id = r.id "
@@ -212,6 +215,7 @@ class CharacterStore:
         scenario: str | None = None,
         mes_example: str | None = None,
         creator_notes: str | None = None,
+        first_mes: str | None = None,
     ) -> bool:
         """Update a character's card fields.
 
@@ -247,6 +251,9 @@ class CharacterStore:
         if creator_notes is not None:
             assignments.append("creator_notes = ?")
             params.append(creator_notes)
+        if first_mes is not None:
+            assignments.append("first_mes = ?")
+            params.append(first_mes)
         if is_tavern is not None:
             assignments.append("is_tavern = ?")
             params.append(1 if is_tavern else 0)
@@ -474,7 +481,8 @@ class CharacterStore:
 def _row_to_role(row: tuple) -> dict[str, Any]:
     """Convert a roles query row to a dict."""
     (id_, name, description, personality, scenario, mes_example,
-     creator_notes, is_tavern, st_name, created_at, updated_at, ref_count) = row
+     creator_notes, first_mes, is_tavern, st_name, created_at, updated_at,
+     ref_count) = row
     return {
         "id": id_,
         "name": name,
@@ -483,6 +491,7 @@ def _row_to_role(row: tuple) -> dict[str, Any]:
         "scenario": scenario,
         "mes_example": mes_example,
         "creator_notes": creator_notes,
+        "first_mes": first_mes or "",
         "is_tavern": bool(is_tavern),
         "st_name": st_name or "",
         "created_at": created_at,
